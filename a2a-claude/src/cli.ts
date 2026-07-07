@@ -118,7 +118,7 @@ function parseCliArgs(): { configPath?: string; overrides: Partial<AgentConfig> 
   if (workspaceDir || model || permissionMode) {
     overrides.claude = {};
     if (workspaceDir) overrides.claude.workingDirectory = workspaceDir;
-    if (model) overrides.claude.model = model;
+    if (model) overrides.claude.model = { name: model };
     if (permissionMode) overrides.claude.permissionMode = permissionMode as ClaudeConfig["permissionMode"];
   }
 

@@ -40,17 +40,17 @@ describe("resolveConfig", () => {
     expect(cfg.server.port).toBe(3030); // default preserved
   });
 
-  it("applies env overrides over file config, and CLI over env", () => {
+  it("applies env overrides over file config, and CLI over env (model group)", () => {
     const p = join(dir, "config.json");
     writeFileSync(p, JSON.stringify({
       agentCard: { name: "Test", description: "d" },
-      claude: { model: "claude-from-file" },
+      claude: { model: { name: "claude-from-file" } },
     }));
     process.env.CLAUDE_MODEL = "claude-from-env";
     let cfg = resolveConfig(p);
-    expect(cfg.claude.model).toBe("claude-from-env");
-    cfg = resolveConfig(p, { claude: { model: "claude-from-cli" } });
-    expect(cfg.claude.model).toBe("claude-from-cli");
+    expect(cfg.claude.model.name).toBe("claude-from-env");
+    cfg = resolveConfig(p, { claude: { model: { name: "claude-from-cli" } } });
+    expect(cfg.claude.model.name).toBe("claude-from-cli");
   });
 
   it("substitutes ${ENV_VAR} tokens in workingDirectory", () => {
@@ -64,16 +64,16 @@ describe("resolveConfig", () => {
     expect(cfg.claude.workingDirectory).toBe("/tmp/my-workspace");
   });
 
-  it("clears model when its env token is unresolved", () => {
+  it("clears model.name when its env token is unresolved", () => {
     delete process.env.NOPE_MODEL;
     delete process.env.CLAUDE_MODEL;
     const p = join(dir, "config.json");
     writeFileSync(p, JSON.stringify({
       agentCard: { name: "T", description: "d" },
-      claude: { model: "${NOPE_MODEL}" },
+      claude: { model: { name: "${NOPE_MODEL}" } },
     }));
     const cfg = resolveConfig(p);
-    expect(cfg.claude.model).toBeUndefined();
+    expect(cfg.claude.model.name).toBeUndefined();
   });
 
   it("substitutes env tokens in MCP stdio args/env and http headers", () => {
@@ -93,5 +93,78 @@ describe("resolveConfig", () => {
 
   it("throws a descriptive error for a missing config file", () => {
     expect(() => resolveConfig(join(dir, "missing.json"))).toThrow(/Failed to load config file/);
+  });
+
+  it("rejects the removed string form of claude.model with a migration hint", () => {
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { model: "claude-sonnet-5" },
+    }));
+    expect(() => resolveConfig(p)).toThrow(/claude\.model\.name/);
+  });
+
+  it("rejects the removed claude.fallbackModel field with a migration hint", () => {
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { fallbackModel: "claude-sonnet-5" },
+    }));
+    expect(() => resolveConfig(p)).toThrow(/claude\.model\.fallback/);
+  });
+
+  it("rejects an invalid model.effort value", () => {
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { model: { effort: "turbo" } },
+    }));
+    expect(() => resolveConfig(p)).toThrow(/effort/);
+  });
+
+  it("rejects an agents entry missing description or prompt", () => {
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { agents: { helper: { description: "", prompt: "x" } } },
+    }));
+    expect(() => resolveConfig(p)).toThrow(/agents\.helper/);
+  });
+
+  it("rejects a plugin entry with a non-local type or empty path", () => {
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { plugins: [{ type: "remote", path: "x" }] },
+    }));
+    expect(() => resolveConfig(p)).toThrow(/plugins\[0\]/);
+  });
+
+  it("substitutes env tokens in plugin paths", () => {
+    process.env.PLUG_DIR = "/tmp/plugdir";
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { plugins: [{ type: "local", path: "${PLUG_DIR}" }] },
+    }));
+    const cfg = resolveConfig(p);
+    expect(cfg.claude.plugins?.[0].path).toBe("/tmp/plugdir");
+  });
+
+  it("accepts a full valid phase-2 claude block", () => {
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: {
+        model: { name: "claude-sonnet-5", fallback: "claude-haiku-4-5", thinking: { type: "adaptive" }, effort: "high" },
+        agents: { reviewer: { description: "reviews", prompt: "You review." } },
+        skills: ["pdf"],
+        plugins: [{ type: "local", path: "/abs/plug" }],
+        outputFormat: { type: "json_schema", schema: { type: "object" } },
+      },
+    }));
+    const cfg = resolveConfig(p);
+    expect(cfg.claude.model.effort).toBe("high");
+    expect(cfg.claude.agents?.reviewer.prompt).toBe("You review.");
   });
 });

@@ -73,8 +73,8 @@ export function buildQueryOptions(
 
   const opts: QueryOptionsLike = {
     cwd: claude.workingDirectory || undefined,
-    model: claude.model || undefined,
-    fallbackModel: claude.fallbackModel || undefined,
+    model: claude.model?.name || undefined,
+    fallbackModel: claude.model?.fallback || undefined,
     permissionMode: claude.permissionMode ?? "acceptEdits",
     allowedTools: claude.allowedTools && claude.allowedTools.length > 0 ? claude.allowedTools : undefined,
     disallowedTools: claude.disallowedTools && claude.disallowedTools.length > 0 ? claude.disallowedTools : undefined,

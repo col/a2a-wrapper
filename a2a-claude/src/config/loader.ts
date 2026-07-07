@@ -80,7 +80,7 @@ export function loadEnvOverrides(): Partial<AgentConfig> {
   if (workspaceDir || claudeModel) {
     cfg.claude = {};
     if (workspaceDir) cfg.claude.workingDirectory = workspaceDir;
-    if (claudeModel) cfg.claude.model = claudeModel;
+    if (claudeModel) cfg.claude.model = { name: claudeModel };
   }
   // ANTHROPIC_API_KEY is read directly by the SDK — never forwarded via config.
 
@@ -129,6 +129,7 @@ export function resolveConfig(
   // Substitute env-var tokens in claude paths, MCP args/env/headers, and sub-agent auth
   substituteEnvTokensInClaude(merged);
   substituteEnvTokensInMcp(merged);
+  validateClaudeShape(merged);
 
   return merged as unknown as Required<AgentConfig>;
 }
@@ -142,10 +143,17 @@ function substituteEnvTokensInClaude(config: Record<string, unknown>): void {
   if (typeof claude.workingDirectory === "string") {
     claude.workingDirectory = substituteEnvTokensInString(claude.workingDirectory);
   }
-  if (typeof claude.model === "string") {
-    const resolved = substituteEnvTokensInString(claude.model);
-    // Clear the field if the token wasn't resolved (env var not set) or if empty.
-    claude.model = resolved.includes("${") ? undefined : resolved || undefined;
+  const model = claude.model as Record<string, unknown> | undefined;
+  if (model && typeof model.name === "string") {
+    const resolved = substituteEnvTokensInString(model.name);
+    model.name = resolved.includes("${") ? undefined : resolved || undefined;
+  }
+  if (Array.isArray(claude.plugins)) {
+    for (const plugin of claude.plugins as Array<Record<string, unknown>>) {
+      if (typeof plugin.path === "string") {
+        plugin.path = substituteEnvTokensInString(plugin.path);
+      }
+    }
   }
   if (Array.isArray(claude.additionalDirectories)) {
     claude.additionalDirectories = (claude.additionalDirectories as string[]).map((d) =>
@@ -178,6 +186,56 @@ function substituteEnvTokensInMcp(config: Record<string, unknown>): void {
         srv.headers = substituteEnvTokensInRecord(srv.headers as Record<string, string>);
       }
     }
+  }
+}
+
+// ─── Phase-2 Shape Validation ────────────────────────────────────────────────
+
+const VALID_EFFORT = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+function validateClaudeShape(config: Record<string, unknown>): void {
+  const claude = config.claude as Record<string, unknown> | undefined;
+  if (!claude) return;
+
+  if (typeof claude.model === "string") {
+    throw new Error(
+      'claude.model is now an object — use claude.model.name (Phase 2 config migration).',
+    );
+  }
+  if ("fallbackModel" in claude && claude.fallbackModel !== undefined) {
+    throw new Error(
+      "claude.fallbackModel has moved to claude.model.fallback (Phase 2 config migration).",
+    );
+  }
+
+  const model = claude.model as Record<string, unknown> | undefined;
+  if (model?.effort !== undefined && !VALID_EFFORT.has(model.effort as string)) {
+    throw new Error(
+      `claude.model.effort "${String(model.effort)}" is invalid. Allowed: low, medium, high, xhigh, max.`,
+    );
+  }
+
+  const agents = claude.agents as Record<string, Record<string, unknown>> | undefined;
+  if (agents) {
+    for (const [name, def] of Object.entries(agents)) {
+      if (typeof def?.description !== "string" || def.description.length === 0 ||
+          typeof def?.prompt !== "string" || def.prompt.length === 0) {
+        throw new Error(
+          `claude.agents.${name} requires non-empty "description" and "prompt" fields.`,
+        );
+      }
+    }
+  }
+
+  const plugins = claude.plugins as Array<Record<string, unknown>> | undefined;
+  if (plugins) {
+    plugins.forEach((plugin, i) => {
+      if (plugin?.type !== "local" || typeof plugin?.path !== "string" || plugin.path.length === 0) {
+        throw new Error(
+          `claude.plugins[${i}] must be { "type": "local", "path": "<non-empty>" }.`,
+        );
+      }
+    });
   }
 }
 
