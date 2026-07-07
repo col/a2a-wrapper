@@ -92,8 +92,55 @@
           "additionalProperties": false,
           "properties": {
             "workingDirectory": { "type": "string" },
-            "model": { "type": "string" },
-            "fallbackModel": { "type": "string" },
+            "model": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "fallback": { "type": "string" },
+                "thinking": {
+                  "type": "object",
+                  "properties": { "type": { "enum": ["adaptive", "disabled", "enabled"] }, "budgetTokens": { "type": "integer", "minimum": 1024 } },
+                  "required": ["type"]
+                },
+                "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] }
+              }
+            },
+            "agents": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "description": { "type": "string", "minLength": 1 },
+                  "prompt": { "type": "string", "minLength": 1 },
+                  "tools": { "type": "array", "items": { "type": "string" } },
+                  "disallowedTools": { "type": "array", "items": { "type": "string" } },
+                  "model": { "type": "string" }
+                },
+                "required": ["description", "prompt"]
+              }
+            },
+            "skills": {
+              "anyOf": [
+                { "const": "all" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            },
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "type": { "const": "local" }, "path": { "type": "string", "minLength": 1 } },
+                "required": ["type", "path"]
+              }
+            },
+            "outputFormat": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "type": { "const": "json_schema" }, "schema": { "type": "object" } },
+              "required": ["type", "schema"]
+            },
             "permissionMode": { "enum": ["acceptEdits", "dontAsk", "plan", "bypassPermissions"] },
             "allowedTools": { "type": "array", "items": { "type": "string" } },
             "disallowedTools": { "type": "array", "items": { "type": "string" } },
@@ -218,6 +265,10 @@
         },
         "emitTodoEvents": {
           "description": "Publish todo-list updates as decision sideband events (default: true).",
+          "type": "boolean"
+        },
+        "forwardSubagentText": {
+          "description": "Forward subagent text/thinking to the sideband, tagged with the parent tool_use id (default: false).",
           "type": "boolean"
         }
       },

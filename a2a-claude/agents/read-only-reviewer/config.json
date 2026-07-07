@@ -33,7 +33,14 @@
   },
   "claude": {
     "workingDirectory": "${WORKSPACE_DIR}",
-    "model": "${CLAUDE_MODEL}",
+    "model": { "name": "${CLAUDE_MODEL}" },
+    "agents": {
+      "security-checker": {
+        "description": "Focused reviewer for security-sensitive code paths",
+        "prompt": "You are a security reviewer. Examine the code you are given for injection, auth, and secret-handling issues. Report findings; never modify files.",
+        "tools": ["Read", "Grep", "Glob"]
+      }
+    },
     "permissionMode": "plan",
     "disallowedTools": ["Write", "Edit", "NotebookEdit", "Bash"],
     "settingSources": [],
