@@ -188,6 +188,49 @@ describe("EventMapper", () => {
     });
     expect(emitted[0].data.output as string).not.toContain("sk-ant-secret123");
   });
+
+  it("forwards subagent thinking/tool events tagged with the parent id when forwardSubagentText is on", () => {
+    const { mapper, emitted } = makeMapper({ forwardSubagentText: true });
+    mapper.handleMessage({
+      ...assistantMsg([
+        { type: "thinking", thinking: "sub thought" },
+        { type: "tool_use", id: "tu1", name: "Bash", input: { command: "ls" } },
+      ]),
+      parent_tool_use_id: "parent-1",
+    });
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0]).toMatchObject({ event: "thinking", data: { content: "sub thought", subagent: "parent-1" } });
+    expect(emitted[1]).toMatchObject({ event: "tool_call_start", data: { toolKind: "shell", subagent: "parent-1" } });
+  });
+
+  it("still drops subagent messages when forwardSubagentText is off", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleMessage({
+      ...assistantMsg([{ type: "thinking", thinking: "sub" }]),
+      parent_tool_use_id: "parent-1",
+    });
+    expect(emitted).toEqual([]);
+  });
+
+  it("does not tag main-thread events with a subagent field", () => {
+    const { mapper, emitted } = makeMapper({ forwardSubagentText: true });
+    mapper.handleMessage(assistantMsg([{ type: "thinking", thinking: "main" }]));
+    expect(emitted[0].data.subagent).toBeUndefined();
+  });
+
+  it("maps task_notification to a sanitized subagent_result decision", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleMessage({
+      type: "system", subtype: "task_notification",
+      task_id: "task-9", status: "completed",
+      summary: "reviewed module with api_key=sk-oops",
+      output_file: "/tmp/secret-output.txt",
+    });
+    expect(emitted[0].event).toBe("decision");
+    expect(emitted[0].data).toMatchObject({ backend: "claude", kind: "subagent_result", taskId: "task-9", status: "completed" });
+    expect(String(emitted[0].data.summary)).not.toContain("sk-oops");
+    expect(JSON.stringify(emitted[0].data)).not.toContain("secret-output");
+  });
 });
 
 describe("sanitizeMessage", () => {
