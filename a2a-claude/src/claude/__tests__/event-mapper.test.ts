@@ -203,6 +203,16 @@ describe("EventMapper", () => {
     expect(emitted[1]).toMatchObject({ event: "tool_call_start", data: { toolKind: "shell", subagent: "parent-1" } });
   });
 
+  it("forwards subagent tool_result events tagged with the parent id when forwardSubagentText is on", () => {
+    const { mapper, emitted } = makeMapper({ forwardSubagentText: true });
+    mapper.handleMessage({
+      type: "user",
+      parent_tool_use_id: "parent-2",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu5", content: "ok" }] },
+    });
+    expect(emitted[0]).toMatchObject({ event: "tool_call_end", data: { itemId: "tu5", subagent: "parent-2" } });
+  });
+
   it("still drops subagent messages when forwardSubagentText is off", () => {
     const { mapper, emitted } = makeMapper();
     mapper.handleMessage({

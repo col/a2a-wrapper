@@ -69,7 +69,7 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `workingDirectory` | `string` | Absolute path to the workspace Claude operates on. Required at runtime. Supports `${ENV_VAR}`. |
 | `model.name` | `string` | Model (e.g. `claude-sonnet-5`). Supports `${CLAUDE_MODEL}`. SDK default when omitted. |
 | `model.fallback` | `string` | Fallback model when the primary is overloaded/unavailable. |
-| `model.thinking` | `{ type: "adaptive" \| "disabled" \| "enabled", budgetTokens?: number }` | Extended-thinking control. `budgetTokens` (minimum `1024`) is required with `type: "enabled"`. |
+| `model.thinking` | `{ type: "adaptive" \| "disabled" \| "enabled", budgetTokens?: number }` | Extended-thinking control. `budgetTokens` (minimum `1024`) is optional but recommended with `type: "enabled"`. |
 | `model.effort` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | Reasoning-effort hint passed through to the SDK. |
 | `agents` | `Record<string, { description, prompt, tools?, disallowedTools?, model? }>` | Native Claude subagents, keyed by agent name. `description` and `prompt` are required and must be non-empty. Passed through to the SDK's `agents` option so Claude can delegate to them as native subagents (distinct from the A2A `subAgents` bridge below). |
 | `skills` | `"all" \| string[]` | Skills to enable. `"all"` enables every discovered skill; an array names specific skills. See the `settingSources` caveat under **Skills** below. |
