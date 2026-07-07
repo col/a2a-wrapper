@@ -104,6 +104,16 @@ describe("resolveConfig", () => {
     expect(() => resolveConfig(p)).toThrow(/claude\.model\.name/);
   });
 
+  it("rejects a string claude.model even when CLAUDE_MODEL is set in the environment", () => {
+    process.env.CLAUDE_MODEL = "claude-from-env";
+    const p = join(dir, "config.json");
+    writeFileSync(p, JSON.stringify({
+      agentCard: { name: "T", description: "d" },
+      claude: { model: "claude-sonnet-5" },
+    }));
+    expect(() => resolveConfig(p)).toThrow(/claude\.model\.name/);
+  });
+
   it("rejects the removed claude.fallbackModel field with a migration hint", () => {
     const p = join(dir, "config.json");
     writeFileSync(p, JSON.stringify({

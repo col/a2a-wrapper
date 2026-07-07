@@ -116,6 +116,7 @@ export function resolveConfig(
 
   if (configFilePath) {
     const fileConfig = loadConfigFile(configFilePath);
+    assertMigratedModelShape(fileConfig.claude as Record<string, unknown> | undefined);
     merged = deepMerge(merged, fileConfig as unknown as Record<string, unknown>);
   }
 
@@ -193,10 +194,12 @@ function substituteEnvTokensInMcp(config: Record<string, unknown>): void {
 
 const VALID_EFFORT = new Set(["low", "medium", "high", "xhigh", "max"]);
 
-function validateClaudeShape(config: Record<string, unknown>): void {
-  const claude = config.claude as Record<string, unknown> | undefined;
+// Guards against the removed string form of claude.model and the removed
+// claude.fallbackModel field. Run once against the raw file config (before
+// env/CLI merging can paper over a legacy shape) and again post-merge as a
+// backstop.
+function assertMigratedModelShape(claude: Record<string, unknown> | undefined): void {
   if (!claude) return;
-
   if (typeof claude.model === "string") {
     throw new Error(
       'claude.model is now an object — use claude.model.name (Phase 2 config migration).',
@@ -207,6 +210,13 @@ function validateClaudeShape(config: Record<string, unknown>): void {
       "claude.fallbackModel has moved to claude.model.fallback (Phase 2 config migration).",
     );
   }
+}
+
+function validateClaudeShape(config: Record<string, unknown>): void {
+  const claude = config.claude as Record<string, unknown> | undefined;
+  if (!claude) return;
+
+  assertMigratedModelShape(claude);
 
   const model = claude.model as Record<string, unknown> | undefined;
   if (model?.effort !== undefined && !VALID_EFFORT.has(model.effort as string)) {
