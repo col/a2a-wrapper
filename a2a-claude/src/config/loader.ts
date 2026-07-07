@@ -202,12 +202,12 @@ function assertMigratedModelShape(claude: Record<string, unknown> | undefined): 
   if (!claude) return;
   if (typeof claude.model === "string") {
     throw new Error(
-      'claude.model is now an object — use claude.model.name (Phase 2 config migration).',
+      'claude.model is now an object — use claude.model.name.',
     );
   }
   if ("fallbackModel" in claude && claude.fallbackModel !== undefined) {
     throw new Error(
-      "claude.fallbackModel has moved to claude.model.fallback (Phase 2 config migration).",
+      "claude.fallbackModel has moved to claude.model.fallback.",
     );
   }
 }
