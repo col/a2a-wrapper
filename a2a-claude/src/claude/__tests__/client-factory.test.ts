@@ -66,4 +66,42 @@ describe("buildQueryOptions", () => {
     expect(opts.allowDangerouslySkipPermissions).toBe(true);
     expect(opts.mcpServers).toEqual({ srv: { type: "stdio", command: "x" } });
   });
+
+  it("maps the model group (name, fallback, thinking, effort)", () => {
+    const opts = buildQueryOptions(cfg({
+      model: { name: "claude-sonnet-5", fallback: "claude-haiku-4-5", thinking: { type: "adaptive" }, effort: "xhigh" },
+    }), {});
+    expect(opts.model).toBe("claude-sonnet-5");
+    expect(opts.fallbackModel).toBe("claude-haiku-4-5");
+    expect(opts.thinking).toEqual({ type: "adaptive" });
+    expect(opts.effort).toBe("xhigh");
+  });
+
+  it("passes agents, skills, plugins, and outputFormat through", () => {
+    const opts = buildQueryOptions(cfg({
+      agents: { reviewer: { description: "d", prompt: "p", tools: ["Read"] } },
+      skills: ["pdf"],
+      plugins: [{ type: "local", path: "/abs/plug" }],
+      outputFormat: { type: "json_schema", schema: { type: "object" } },
+    }), {});
+    expect(opts.agents).toEqual({ reviewer: { description: "d", prompt: "p", tools: ["Read"] } });
+    expect(opts.skills).toEqual(["pdf"]);
+    expect(opts.plugins).toEqual([{ type: "local", path: "/abs/plug" }]);
+    expect(opts.outputFormat).toEqual({ type: "json_schema", schema: { type: "object" } });
+  });
+
+  it("omits phase-2 fields when unset and derives forwardSubagentText from features", () => {
+    const base = buildQueryOptions(cfg(), {});
+    expect(base.thinking).toBeUndefined();
+    expect(base.effort).toBeUndefined();
+    expect(base.agents).toBeUndefined();
+    expect(base.skills).toBeUndefined();
+    expect(base.plugins).toBeUndefined();
+    expect(base.outputFormat).toBeUndefined();
+    expect(base.forwardSubagentText).toBeUndefined();
+
+    const c = cfg();
+    c.features = { ...c.features, forwardSubagentText: true };
+    expect(buildQueryOptions(c, {}).forwardSubagentText).toBe(true);
+  });
 });

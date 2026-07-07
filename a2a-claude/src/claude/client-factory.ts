@@ -26,6 +26,13 @@ export interface QueryOptionsLike {
   cwd?: string;
   model?: string;
   fallbackModel?: string;
+  thinking?: Record<string, unknown>;
+  effort?: string;
+  agents?: Record<string, unknown>;
+  skills?: "all" | string[];
+  plugins?: Array<Record<string, unknown>>;
+  outputFormat?: Record<string, unknown>;
+  forwardSubagentText?: boolean;
   permissionMode?: string;
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -75,6 +82,17 @@ export function buildQueryOptions(
     cwd: claude.workingDirectory || undefined,
     model: claude.model?.name || undefined,
     fallbackModel: claude.model?.fallback || undefined,
+    thinking: claude.model?.thinking as Record<string, unknown> | undefined,
+    effort: claude.model?.effort,
+    agents: claude.agents && Object.keys(claude.agents).length > 0
+      ? (claude.agents as unknown as Record<string, unknown>)
+      : undefined,
+    skills: claude.skills,
+    plugins: claude.plugins && claude.plugins.length > 0
+      ? (claude.plugins as unknown as Array<Record<string, unknown>>)
+      : undefined,
+    outputFormat: claude.outputFormat as unknown as Record<string, unknown> | undefined,
+    forwardSubagentText: config.features.forwardSubagentText === true ? true : undefined,
     permissionMode: claude.permissionMode ?? "acceptEdits",
     allowedTools: claude.allowedTools && claude.allowedTools.length > 0 ? claude.allowedTools : undefined,
     disallowedTools: claude.disallowedTools && claude.disallowedTools.length > 0 ? claude.disallowedTools : undefined,
