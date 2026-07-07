@@ -6,3 +6,4 @@ export { CLAUDE_CAPABILITIES } from "./capabilities.js";
 export { createClaudeClient, buildQueryOptions } from "./client-factory.js";
 export type { ClaudeClientLike, QueryLike, QueryOptionsLike, SDKMessageLike } from "./client-factory.js";
 export { extractUserText } from "./prompt-builder.js";
+export { usageRecordsFromResult } from "./usage-mapper.js";

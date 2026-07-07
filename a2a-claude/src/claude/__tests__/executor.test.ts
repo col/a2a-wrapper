@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeExecutor } from "../executor.js";
@@ -137,6 +137,80 @@ describe("ClaudeExecutor.execute", () => {
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
     expect(states(events)).toContain("failed");
   });
+
+  it("publishes a structured-output DataPart artifact when the result carries structured_output", async () => {
+    const client = new FakeClaudeClient([{
+      messages: [
+        { type: "system", subtype: "init", session_id: "s", model: "m" },
+        {
+          type: "result", subtype: "success", result: "done",
+          structured_output: { verdict: "pass", score: 9 },
+          usage: {}, total_cost_usd: 0, num_turns: 1,
+        },
+      ],
+    }]);
+    config.claude.outputFormat = { type: "json_schema", schema: { type: "object" } };
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+
+    const artifacts = events.filter((e) => e.kind === "artifact-update") as Array<Record<string, any>>;
+    const structured = artifacts.find((a) => a.artifact?.artifactId === "structured-output-t1");
+    expect(structured).toBeDefined();
+    expect(structured!.artifact.parts[0]).toMatchObject({
+      kind: "data",
+      data: { verdict: "pass", score: 9 },
+    });
+    // text artifact still present
+    expect(artifacts.some((a) => a.artifact?.artifactId !== "structured-output-t1")).toBe(true);
+    expect(states(events)).toContain("completed");
+  });
+
+  it("publishes no structured-output artifact when the result has none", async () => {
+    const client = new FakeClaudeClient([happyTurn("s", "plain")]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events } = makeBus();
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+    const artifacts = events.filter((e) => e.kind === "artifact-update") as Array<Record<string, any>>;
+    expect(artifacts.some((a) => a.artifact?.artifactId === "structured-output-t1")).toBe(false);
+  });
+
+  it("publishes a usage trace artifact accumulated from modelUsage, including on error results", async () => {
+    const client = new FakeClaudeClient([{
+      messages: [
+        { type: "system", subtype: "init", session_id: "s", model: "m" },
+        {
+          type: "result", subtype: "error_max_turns", errors: [], num_turns: 5, is_error: true,
+          duration_api_ms: 800,
+          modelUsage: {
+            "claude-sonnet-5": { inputTokens: 10, outputTokens: 4, costUSD: 0.01 },
+            "claude-haiku-4-5": { inputTokens: 3, outputTokens: 1, costUSD: 0.001 },
+          },
+        },
+      ],
+    }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+
+    const usage = (events.filter((e) => e.kind === "artifact-update") as Array<Record<string, any>>)
+      .find((a) => a.artifact?.name === "usage");
+    expect(usage).toBeDefined();
+    const data = usage!.artifact.parts[0].data;
+    expect(data.llmCalls).toBe(2);
+    expect(data.inputTokens).toBe(13);
+    expect(data.cost).toBeCloseTo(0.011);
+    expect(data.calls).toHaveLength(2);
+    expect(states(events)).toContain("failed");
+  });
+
+  it("rejects a plugins path that does not exist at initialize", async () => {
+    config.claude.plugins = [{ type: "local", path: join(ws, "no-such-plugin") }];
+    const ex = new ClaudeExecutor(config, () => new FakeClaudeClient([happyTurn("s", "x")]));
+    await expect(ex.initialize()).rejects.toThrow(/plugin/i);
+  });
 });
 
 describe("ClaudeExecutor.cancelTask", () => {
@@ -221,6 +295,17 @@ describe("ClaudeExecutor validation", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it("resolves relative plugin paths against configDir", async () => {
+    const pluginDir = join(ws, "myplugin");
+    mkdirSync(pluginDir);
+    config.configDir = ws;
+    config.claude.plugins = [{ type: "local", path: "./myplugin" }];
+    const client = new FakeClaudeClient([happyTurn("s", "x")]);
+    const ex = new ClaudeExecutor(config, () => client);
+    await ex.execute(makeCtx("t1", "ctx-1"), makeBus().bus);
+    expect((client.calls[0].options.plugins as Array<{ path: string }>)[0].path).toBe(pluginDir);
   });
 });
 
