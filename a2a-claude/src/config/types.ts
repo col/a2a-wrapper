@@ -61,13 +61,59 @@ export type ClaudePermissionMode = "acceptEdits" | "dontAsk" | "plan" | "bypassP
  * Claude Agent SDK connection and execution settings.
  * Fields map 1:1 onto @anthropic-ai/claude-agent-sdk Options (see spec §3.1).
  */
+export interface ClaudeModelConfig {
+  /** Model (e.g. "claude-sonnet-5"). Supports ${CLAUDE_MODEL}. SDK default when omitted. */
+  name?: string;
+  /** Fallback model when the primary is overloaded/unavailable. */
+  fallback?: string;
+  /** Extended thinking behavior. */
+  thinking?: { type: "adaptive" } | { type: "disabled" } | { type: "enabled"; budgetTokens: number };
+  /** Reasoning effort level. */
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+export interface ClaudeAgentDefinitionConfig {
+  /** What this agent does — surfaced to the orchestrating model for delegation decisions. */
+  description: string;
+  /** The subagent's system prompt. */
+  prompt: string;
+  /** Tools auto-allowed without prompting, scoped to this subagent. */
+  tools?: string[];
+  /** Tools removed from this subagent's context entirely. */
+  disallowedTools?: string[];
+  /** Model override for this subagent. Falls back to the top-level model when omitted. */
+  model?: string;
+  // Forward-compatible passthrough for future SDK Options.agents fields.
+  [key: string]: unknown;
+}
+
+export interface ClaudePluginConfig {
+  /** Only local plugins are supported. */
+  type: "local";
+  /** Filesystem path to the plugin. Resolves against configDir; supports ${ENV_VAR}. */
+  path: string;
+}
+
+export interface StructuredOutputFormatConfig {
+  /** Only JSON Schema structured output is supported. */
+  type: "json_schema";
+  /** The JSON Schema every task's DataPart artifact must conform to. */
+  schema: Record<string, unknown>;
+}
+
 export interface ClaudeConfig {
   /** Absolute path to the workspace Claude operates on. Required at runtime. Supports ${ENV_VAR}. */
   workingDirectory?: string;
-  /** Model (e.g. "claude-sonnet-5"). Supports ${CLAUDE_MODEL}. SDK default when omitted. */
-  model?: string;
-  /** Fallback model when the primary is overloaded/unavailable. */
-  fallbackModel?: string;
+  /** Model selection and reasoning behavior. */
+  model?: ClaudeModelConfig;
+  /** Native Claude subagents, keyed by agent name → SDK Options.agents. */
+  agents?: Record<string, ClaudeAgentDefinitionConfig>;
+  /** Skills to enable: "all" or a list of skill names. */
+  skills?: "all" | string[];
+  /** Local plugins to load. Paths resolve against configDir; ${ENV_VAR} supported. */
+  plugins?: ClaudePluginConfig[];
+  /** Per-agent structured output schema. Every task returns a DataPart artifact matching it. */
+  outputFormat?: StructuredOutputFormatConfig;
   /**
    * Permission mode. "default" and "auto" are rejected — they require an
    * interactive approver / classifier, incompatible with headless A2A.
@@ -130,6 +176,8 @@ export interface FeatureFlags {
   emitFileChangeEvents?: boolean;
   /** Publish todo-list updates as sideband events. Default: true. */
   emitTodoEvents?: boolean;
+  /** Forward subagent text/thinking to the sideband, tagged with the parent tool_use id. Default: false. */
+  forwardSubagentText?: boolean;
 }
 
 // ─── Timeout Config ─────────────────────────────────────────────────────────

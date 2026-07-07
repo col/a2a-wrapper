@@ -26,6 +26,7 @@ export const DEFAULTS: Required<AgentConfig> = {
   },
   claude: {
     workingDirectory: "",              // required; validated on startup
+    model: {},
     permissionMode: "acceptEdits",     // headless default: edits allowed, no prompts
     allowedTools: [],
     disallowedTools: [],
@@ -45,6 +46,7 @@ export const DEFAULTS: Required<AgentConfig> = {
     emitToolEvents: true,
     emitFileChangeEvents: true,
     emitTodoEvents: true,
+    forwardSubagentText: false,
   },
   timeouts: {
     prompt: 600_000,

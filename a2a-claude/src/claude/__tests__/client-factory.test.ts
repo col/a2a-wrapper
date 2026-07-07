@@ -13,7 +13,7 @@ function cfg(claude: Partial<Required<AgentConfig>["claude"]> = {}, extra: Parti
 
 describe("buildQueryOptions", () => {
   it("maps core fields and enforces hardening flags", () => {
-    const opts = buildQueryOptions(cfg({ model: "claude-sonnet-5", maxTurns: 8, maxBudgetUsd: 2 }), {});
+    const opts = buildQueryOptions(cfg({ model: { name: "claude-sonnet-5" }, maxTurns: 8, maxBudgetUsd: 2 }), {});
     expect(opts.cwd).toBe("/ws");
     expect(opts.model).toBe("claude-sonnet-5");
     expect(opts.permissionMode).toBe("acceptEdits");
