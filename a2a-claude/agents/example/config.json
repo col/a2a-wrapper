@@ -33,7 +33,7 @@
   },
   "claude": {
     "workingDirectory": "${WORKSPACE_DIR}",
-    "model": "${CLAUDE_MODEL}",
+    "model": { "name": "${CLAUDE_MODEL}" },
     "permissionMode": "acceptEdits",
     "settingSources": [],
     "additionalDirectories": [],

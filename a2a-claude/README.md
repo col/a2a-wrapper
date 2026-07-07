@@ -67,8 +67,14 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | Field | Type | Description |
 |---|---|---|
 | `workingDirectory` | `string` | Absolute path to the workspace Claude operates on. Required at runtime. Supports `${ENV_VAR}`. |
-| `model` | `string` | Model (e.g. `claude-sonnet-5`). Supports `${CLAUDE_MODEL}`. SDK default when omitted. |
-| `fallbackModel` | `string` | Fallback model when the primary is overloaded/unavailable. |
+| `model.name` | `string` | Model (e.g. `claude-sonnet-5`). Supports `${CLAUDE_MODEL}`. SDK default when omitted. |
+| `model.fallback` | `string` | Fallback model when the primary is overloaded/unavailable. |
+| `model.thinking` | `{ type: "adaptive" \| "disabled" \| "enabled", budgetTokens?: number }` | Extended-thinking control. `budgetTokens` (minimum `1024`) is required with `type: "enabled"`. |
+| `model.effort` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | Reasoning-effort hint passed through to the SDK. |
+| `agents` | `Record<string, { description, prompt, tools?, disallowedTools?, model? }>` | Native Claude subagents, keyed by agent name. `description` and `prompt` are required and must be non-empty. Passed through to the SDK's `agents` option so Claude can delegate to them as native subagents (distinct from the A2A `subAgents` bridge below). |
+| `skills` | `"all" \| string[]` | Skills to enable. `"all"` enables every discovered skill; an array names specific skills. See the `settingSources` caveat under **Skills** below. |
+| `plugins` | `Array<{ type: "local", path: string }>` | Local plugins to load. Only `type: "local"` is supported. `path` supports `${ENV_VAR}` substitution and resolves relative to `configDir`. |
+| `outputFormat` | `{ type: "json_schema", schema: object }` | Requests a schema-conforming structured response from the SDK for every task. When set and the SDK returns `structured_output`, the wrapper publishes a second `structured-output-<taskId>` artifact — see **Artifacts** below. |
 | `permissionMode` | `"acceptEdits" \| "dontAsk" \| "plan" \| "bypassPermissions"` | Permission mode. `"default"` and `"auto"` are rejected — see **Permission modes** below. Default: `"acceptEdits"`. |
 | `allowedTools` | `string[]` | Tools auto-allowed without prompting. |
 | `disallowedTools` | `string[]` | Tools removed from the model's context entirely. |
@@ -83,6 +89,14 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `dangerouslyAllowBypassPermissions` | `boolean` | Must be `true` when `permissionMode` is `"bypassPermissions"`. |
 | `contextFile` | `string` | Filename for the pre-built domain context file within `workingDirectory`. Default `"context.md"`. |
 | `contextPrompt` | `string` | Default prompt used when `buildContext()` is called without an explicit prompt. |
+
+Also relevant: `features.forwardSubagentText` (`boolean`, default `false`) — forwards native-subagent `thinking`/`assistant` text to the sideband, tagged with the parent tool_use id. See **Sideband Events** below.
+
+**Migration from Phase 1 configs:** `claude.model` is now an object: `"model": "claude-sonnet-5"` → `"model": { "name": "claude-sonnet-5" }`, and `claude.fallbackModel` → `claude.model.fallback`. The loader fails with a pointed error if the old shape is used.
+
+### Skills
+
+Skill discovery may interact with `settingSources` isolation (workspace skills live under `.claude/skills`). The wrapper passes the `skills` option through unchanged; if a workspace skill isn't discovered with `settingSources: []`, add `"project"` to `settingSources`. Verified behavior is documented here after the manual E2E run.
 
 ### Full config reference
 
@@ -115,7 +129,7 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 
   "claude": {
     "workingDirectory": "${WORKSPACE_DIR}",
-    "model": "${CLAUDE_MODEL}",
+    "model": { "name": "${CLAUDE_MODEL}" },
     "permissionMode": "acceptEdits",
     "settingSources": [],
     "additionalDirectories": [],
@@ -242,8 +256,15 @@ Sideband events are published through `AgentEventEmitter` for every Claude Agent
 | `decision` (`kind: "file_change"`) | `Edit` / `Write` / `NotebookEdit` tool call | Path and change kind only — never file contents; controlled by `features.emitFileChangeEvents` |
 | `decision` (`kind: "todo_list"`) | `TodoWrite` tool call | Controlled by `features.emitTodoEvents` |
 | `decision` (`kind: "permission_denied"`) | SDK `system`/`permission_denied` message | Tool name + sanitized message |
+| `decision` (`kind: "subagent_result"`) | SDK `system`/`task_notification` message | Native subagent completion summary — `taskId`, `status`, and a sanitized `summary`; never the raw `output_file` path or contents |
 | `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns` |
 | `agent_error` | SDK `result` failure subtypes / `error` message | Sanitized error message; reason mapped from the SDK's failure subtype (e.g. max turns, max budget) |
+
+With `features.forwardSubagentText` enabled (default `false`), `thinking`, `tool_call_start`/`tool_call_end`, and `decision` events emitted while a native Claude subagent is running also carry a `subagent: <parent_tool_use_id>` field, so consumers can attribute events to the delegating tool call. When the flag is off (the default), subagent-scoped assistant/user messages are not forwarded to the sideband at all.
+
+## Artifacts
+
+Each task produces a text artifact (the assistant's final response). When `claude.outputFormat` is configured and the SDK returns a `structured_output` for that turn, the wrapper publishes a second artifact, `structured-output-<taskId>`, carrying the schema-conforming object as an A2A DataPart (`mimeType: "application/json"`). Every task also publishes a `usage` trace artifact — OTel-aligned token/cost telemetry accumulated per task — whenever at least one LLM call was made, on both successful and failed tasks.
 
 ## Docker
 
@@ -281,15 +302,25 @@ curl -s -X POST http://localhost:3030/a2a/jsonrpc -H 'content-type: application/
 
 This is a manual, documented step — it is **not** part of automated CI and requires a funded Anthropic API key.
 
-## Phase 2 Roadmap
+To exercise native subagent delegation and structured outputs, run the reviewer example (its config already declares the `security-checker` subagent) and ask a question that should trigger delegation, then inspect the emitted artifacts:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-... WORKSPACE_DIR=/path/to/scratch-repo
+node a2a-claude/dist/cli.js --config a2a-claude/agents/read-only-reviewer/config.json &
+curl -s -X POST http://localhost:3031/a2a/jsonrpc -H 'content-type: application/json' -d '{
+  "jsonrpc": "2.0", "id": "1", "method": "message/send",
+  "params": { "message": { "kind": "message", "messageId": "m1", "role": "user",
+    "parts": [{ "kind": "text", "text": "Delegate to the security-checker subagent to review this repository for injection, auth, and secret-handling issues." }] } }
+}'
+```
+
+Verify: a `decision` sideband event with `kind: "subagent_result"` appears once the subagent completes; a `usage` trace artifact is published for the task; and — if the config additionally sets `claude.outputFormat` — a `structured-output-*` DataPart artifact appears alongside the text response.
+
+## Phase 3 Roadmap
 
 The following are explicitly out of scope for this release and tracked as future work:
 
 - hooks configuration
-- native Claude subagents (`agents` option)
-- skills
-- structured outputs (`outputFormat`)
-- richer usage/cost telemetry
 - session forking
 - `canUseTool` policy engine
 - file checkpointing/rewind
