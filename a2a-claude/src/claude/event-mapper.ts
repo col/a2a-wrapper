@@ -90,12 +90,18 @@ export class EventMapper {
         case "system":
           this.handleSystem(msg);
           break;
-        case "assistant":
-          if (msg.parent_tool_use_id == null) this.handleAssistant(msg);
+        case "assistant": {
+          const parent = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : null;
+          if (parent === null) this.handleAssistant(msg, null);
+          else if (this.config.features.forwardSubagentText) this.handleAssistant(msg, parent);
           break;
-        case "user":
-          if (msg.parent_tool_use_id == null) this.handleUser(msg);
+        }
+        case "user": {
+          const parent = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : null;
+          if (parent === null) this.handleUser(msg, null);
+          else if (this.config.features.forwardSubagentText) this.handleUser(msg, parent);
           break;
+        }
         case "result":
           this.handleResult(msg);
           break;
@@ -122,11 +128,21 @@ export class EventMapper {
         tool: typeof msg.tool_name === "string" ? msg.tool_name : "<tool>",
         message: sanitizeMessage(msg.message),
       });
+    } else if (msg.subtype === "task_notification") {
+      this.emitter.emit("decision", {
+        backend: "claude",
+        kind: "subagent_result",
+        taskId: typeof msg.task_id === "string" ? msg.task_id : "",
+        status: typeof msg.status === "string" ? msg.status : "unknown",
+        summary: sanitizeMessage(msg.summary),
+        // never include output_file — path or contents
+      });
     }
   }
 
-  private handleAssistant(msg: SDKMessageLike): void {
+  private handleAssistant(msg: SDKMessageLike, subagentId: string | null): void {
     const features = this.config.features;
+    const tag = subagentId ? { subagent: subagentId } : {};
     const inner = msg.message as Record<string, unknown> | undefined;
     const content = inner?.content;
     if (!Array.isArray(content)) return;
@@ -136,7 +152,7 @@ export class EventMapper {
 
       if (block.type === "thinking") {
         if (features.emitThinkingEvents && typeof block.thinking === "string" && block.thinking) {
-          this.emitter.emit("thinking", { content: redactSecrets(block.thinking).substring(0, 2000) });
+          this.emitter.emit("thinking", { content: redactSecrets(block.thinking).substring(0, 2000), ...tag });
         }
         continue;
       }
@@ -156,6 +172,7 @@ export class EventMapper {
             backend: "claude",
             kind: "file_change",
             changes: [{ path, kind: FILE_TOOLS[name] }],
+            ...tag,
           });
         }
         continue;
@@ -171,6 +188,7 @@ export class EventMapper {
               text: typeof t.content === "string" ? t.content : String(t.content ?? ""),
               completed: t.status === "completed",
             })),
+            ...tag,
           });
         }
         continue;
@@ -184,6 +202,7 @@ export class EventMapper {
           toolKind: "shell",
           command: typeof input.command === "string" ? redactSecrets(input.command).substring(0, MAX_COMMAND_LENGTH) : "<command>",
           itemId,
+          ...tag,
         });
       } else if (name.startsWith("mcp__")) {
         const rest = name.slice("mcp__".length);
@@ -198,6 +217,7 @@ export class EventMapper {
           tool,
           itemId,
           ...(isDelegation ? { delegation: true } : {}),
+          ...tag,
         });
       } else {
         this.emitter.emit("tool_call_start", {
@@ -205,13 +225,15 @@ export class EventMapper {
           toolKind: "builtin",
           tool: name,
           itemId,
+          ...tag,
         });
       }
     }
   }
 
-  private handleUser(msg: SDKMessageLike): void {
+  private handleUser(msg: SDKMessageLike, subagentId: string | null): void {
     if (!this.config.features.emitToolEvents) return;
+    const tag = subagentId ? { subagent: subagentId } : {};
     const inner = msg.message as Record<string, unknown> | undefined;
     const content = inner?.content;
     if (!Array.isArray(content)) return;
@@ -224,6 +246,7 @@ export class EventMapper {
         itemId: typeof block.tool_use_id === "string" ? block.tool_use_id : "",
         output: truncateOutput(block.content),
         status: block.is_error === true ? "error" : "completed",
+        ...tag,
       });
     }
   }
