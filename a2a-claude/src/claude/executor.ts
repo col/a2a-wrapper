@@ -10,10 +10,11 @@
 
 import { existsSync, statSync } from "node:fs";
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
-import { join, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { v4 as uuidv4 } from "uuid";
 
 import type { AgentExecutor, RequestContext, ExecutionEventBus } from "@a2a-js/sdk/server";
+import type { TaskArtifactUpdateEvent } from "@a2a-js/sdk";
 
 import type { AgentConfig, McpStdioServerConfig } from "../config/types.js";
 import { createClaudeClient, buildQueryOptions } from "./client-factory.js";
@@ -23,6 +24,7 @@ import { EventMapper, sanitizeMessage } from "./event-mapper.js";
 import { validateMcpServers, toClaudeMcpEntry } from "./mcp-adapter.js";
 import { CLAUDE_BACKEND_PATHS } from "./backend-paths.js";
 import { extractUserText } from "./prompt-builder.js";
+import { usageRecordsFromResult } from "./usage-mapper.js";
 
 import {
   resolveTransport,
@@ -34,6 +36,8 @@ import {
   publishFinalArtifact,
   publishStreamingChunk,
   publishLastChunkMarker,
+  LlmUsageAccumulator,
+  publishTraceArtifact,
 } from "@a2a-wrapper/core";
 import type { EventTransport, EventTransportFn, SynthesizedMcpDescriptor } from "@a2a-wrapper/core";
 
@@ -67,6 +71,18 @@ export class ClaudeExecutor implements AgentExecutor {
     if (this.initialized) return;
 
     this.validateConfig();
+
+    // Resolve and validate plugin paths (relative → configDir-anchored).
+    if (this.config.claude.plugins?.length) {
+      const baseDir = this.config.configDir ?? process.cwd();
+      this.config.claude.plugins = this.config.claude.plugins.map((plugin) => {
+        const abs = isAbsolute(plugin.path) ? plugin.path : resolvePath(baseDir, plugin.path);
+        if (!existsSync(abs)) {
+          throw new Error(`claude.plugins path does not exist: "${abs}" (plugin directories must exist at startup).`);
+        }
+        return { ...plugin, path: abs };
+      });
+    }
 
     if (!process.env["ANTHROPIC_API_KEY"]) {
       log.warn(
@@ -186,6 +202,8 @@ export class ClaudeExecutor implements AgentExecutor {
 
           let finalText = "";
           let resultError: string | null = null;
+          let structuredOutput: unknown;
+          const usageAccumulator = new LlmUsageAccumulator();
           const streamArtifactId = `response-${taskId}`;
           let streamArtifactStarted = false;
           const streaming = this.config.features.streamArtifactChunks === true;
@@ -211,8 +229,14 @@ export class ClaudeExecutor implements AgentExecutor {
             }
 
             if (msg.type === "result") {
+              for (const record of usageRecordsFromResult(msg)) {
+                usageAccumulator.record(record);
+              }
               if (msg.subtype === "success" && typeof msg.result === "string") {
                 finalText = msg.result;
+                if (msg.structured_output !== undefined) {
+                  structuredOutput = msg.structured_output;
+                }
               } else if (msg.subtype !== "success") {
                 const reasons: Record<string, string> = {
                   error_max_turns: "Turn limit reached (max_turns).",
@@ -227,6 +251,11 @@ export class ClaudeExecutor implements AgentExecutor {
             mapper.handleMessage(msg);
           }
 
+          const usageSummary = usageAccumulator.summary();
+          if (usageSummary.llmCalls > 0) {
+            publishTraceArtifact(bus, taskId, contextId, "usage", usageSummary as unknown as Record<string, unknown>);
+          }
+
           if (resultError) {
             publishStatus(bus, taskId, contextId, "failed", sanitizeMessage(resultError), true);
             bus.finished();
@@ -237,6 +266,28 @@ export class ClaudeExecutor implements AgentExecutor {
             publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
           } else {
             publishFinalArtifact(bus, taskId, contextId, finalText);
+          }
+
+          if (structuredOutput !== undefined) {
+            const structuredEvent: TaskArtifactUpdateEvent = {
+              kind: "artifact-update",
+              taskId,
+              contextId,
+              append: false,
+              lastChunk: true,
+              artifact: {
+                artifactId: `structured-output-${taskId}`,
+                name: "structured-output",
+                parts: [
+                  {
+                    kind: "data",
+                    data: structuredOutput as Record<string, unknown>,
+                    metadata: { mimeType: "application/json" },
+                  } as never,
+                ],
+              },
+            };
+            bus.publish(structuredEvent);
           }
 
           publishStatus(bus, taskId, contextId, "completed", undefined, true);
