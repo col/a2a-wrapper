@@ -177,4 +177,66 @@ describe("resolveConfig", () => {
     expect(cfg.claude.model.effort).toBe("high");
     expect(cfg.claude.agents?.reviewer.prompt).toBe("You review.");
   });
+
+  // ── Marketplace plugins ───────────────────────────────────────────────────
+
+  function writeMarketplaceConfig(dirPath: string, claude: Record<string, unknown>): string {
+    const p = join(dirPath, "config.json");
+    writeFileSync(p, JSON.stringify({ agentCard: { name: "T", description: "d" }, claude }));
+    return p;
+  }
+
+  const SUPERPOWERS = {
+    "superpowers-marketplace": {
+      source: { source: "github", repo: "obra/superpowers-marketplace", ref: "v6.1.1" },
+    },
+  };
+
+  it("accepts marketplaces with enabled plugins", () => {
+    const p = writeMarketplaceConfig(dir, {
+      marketplaces: SUPERPOWERS,
+      enabledPlugins: { "superpowers@superpowers-marketplace": true },
+    });
+    const cfg = resolveConfig(p);
+    expect(cfg.claude.marketplaces?.["superpowers-marketplace"].source.repo).toBe(
+      "obra/superpowers-marketplace",
+    );
+    expect(cfg.claude.enabledPlugins?.["superpowers@superpowers-marketplace"]).toBe(true);
+  });
+
+  it("rejects a marketplace without a source kind", () => {
+    const p = writeMarketplaceConfig(dir, { marketplaces: { mk: { source: { repo: "o/r" } } } });
+    expect(() => resolveConfig(p)).toThrow(/claude\.marketplaces\.mk\.source/);
+  });
+
+  it("rejects an enabledPlugins key that is not plugin@marketplace", () => {
+    const p = writeMarketplaceConfig(dir, {
+      marketplaces: SUPERPOWERS,
+      enabledPlugins: { superpowers: true },
+    });
+    expect(() => resolveConfig(p)).toThrow(/"<plugin-id>@<marketplace-id>"/);
+  });
+
+  it("rejects an enabledPlugins key naming an undeclared marketplace", () => {
+    const p = writeMarketplaceConfig(dir, {
+      marketplaces: SUPERPOWERS,
+      enabledPlugins: { "superpowers@typo-marketplace": true },
+    });
+    expect(() => resolveConfig(p)).toThrow(/"typo-marketplace", which is not declared/);
+  });
+
+  it("substitutes env tokens throughout a marketplace source", () => {
+    process.env.MK_REF = "v9.9.9";
+    process.env.MK_TOKEN = "ghp_secret";
+    const p = writeMarketplaceConfig(dir, {
+      marketplaces: {
+        mk: { source: { source: "git", url: "https://x@git/r.git", ref: "${MK_REF}", token: "${MK_TOKEN}" } },
+      },
+      enabledPlugins: { "p@mk": true },
+    });
+    const cfg = resolveConfig(p);
+    const source = cfg.claude.marketplaces!.mk.source;
+    expect(source.ref).toBe("v9.9.9");
+    expect(source.token).toBe("ghp_secret");
+  });
 });

@@ -74,6 +74,8 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `agents` | `Record<string, { description, prompt, tools?, disallowedTools?, model? }>` | Native Claude subagents, keyed by agent name. `description` and `prompt` are required and must be non-empty. Passed through to the SDK's `agents` option so Claude can delegate to them as native subagents (distinct from the A2A `subAgents` bridge below). |
 | `skills` | `"all" \| string[]` | Skills to enable. `"all"` enables every discovered skill; an array names specific skills. See the `settingSources` caveat under **Skills** below. |
 | `plugins` | `Array<{ type: "local", path: string }>` | Local plugins to load. Only `type: "local"` is supported. `path` supports `${ENV_VAR}` substitution and resolves relative to `configDir`. |
+| `marketplaces` | `Record<string, { source: { source: string, ... } }>` | Plugin marketplaces to register, keyed by marketplace id. The SDK fetches and installs the plugins itself — see **Marketplace plugins** below. Every string field in `source` supports `${ENV_VAR}` substitution. |
+| `enabledPlugins` | `Record<string, boolean>` | Plugins to enable, keyed `"<plugin-id>@<marketplace-id>"`. The marketplace id must appear in `marketplaces`. Startup fails if an enabled plugin does not load. |
 | `outputFormat` | `{ type: "json_schema", schema: object }` | Requests a schema-conforming structured response from the SDK for every task. When set and the SDK returns `structured_output`, the wrapper publishes a second `structured-output-<taskId>` artifact — see **Artifacts** below. |
 | `permissionMode` | `"acceptEdits" \| "dontAsk" \| "plan" \| "bypassPermissions"` | Permission mode. `"default"` and `"auto"` are rejected — see **Permission modes** below. Default: `"acceptEdits"`. |
 | `allowedTools` | `string[]` | Tools auto-allowed without prompting. |
@@ -97,6 +99,43 @@ Also relevant: `features.forwardSubagentText` (`boolean`, default `false`) — f
 ### Skills
 
 Skill discovery may interact with `settingSources` isolation (workspace skills live under `.claude/skills`). The wrapper passes the `skills` option through unchanged; if a workspace skill isn't discovered with `settingSources: []`, add `"project"` to `settingSources`. Verified behavior is documented here after the manual E2E run.
+
+### Marketplace plugins
+
+`plugins` requires a plugin directory that already exists on disk. `marketplaces` + `enabledPlugins` instead let the SDK fetch and install plugins itself, so nothing has to be baked into the image:
+
+```json
+"claude": {
+  "marketplaces": {
+    "superpowers-marketplace": {
+      "source": { "source": "github", "repo": "obra/superpowers-marketplace", "ref": "v6.1.1" }
+    }
+  },
+  "enabledPlugins": { "superpowers@superpowers-marketplace": true }
+}
+```
+
+`source` is passed through to the SDK unchanged, so every source kind it supports works — `github` (`repo`), `git` (`url`), `git-subdir` (`url` + `path`, for monorepos), `url` (direct `marketplace.json`), `npm` (`package`), and local `directory`. Each accepts `ref` or `sha`.
+
+**Pin every marketplace by `ref` or `sha`.** Plugin hooks and bundled MCP servers execute as code at the session's permission mode, so an unpinned marketplace means two sessions of the same agent can run different code.
+
+These map to the SDK's *flag-tier* `settings`, which composes with `settingSources` rather than competing with it — marketplace plugins load even under the default `settingSources: []` isolation, and combining them with `["project"]` for `CLAUDE.md` works as expected.
+
+Private marketplaces are cloned by `git`, so credentials must be supplied through the process environment (e.g. `GIT_ASKPASS`, or a configured credential helper) rather than per-source config.
+
+#### Startup preflight
+
+The SDK installs marketplace plugins **asynchronously by default** — with `CLAUDE_CODE_SYNC_PLUGIN_INSTALL` unset it installs nothing, reports no error, and loads zero plugins on every subsequent run too. The wrapper therefore sets that flag for sessions with marketplaces configured, and `initialize()` runs a preflight that verifies each enabled plugin actually loaded:
+
+```
+Configured plugin(s) did not load: superpowers@superpowers-marketplace. Check that each
+marketplace source and ref/sha is correct and that the plugin name exists in that
+marketplace's manifest.
+```
+
+The check diffs the session init message's plugin list, **not** the `plugin_install` events — those report per-marketplace status, so a marketplace that clones cleanly but contains no plugin by the configured name still reports `installed` and `completed`. The probe costs no tokens (the init message precedes any model call) and warms the plugin cache so the first task doesn't pay the clone.
+
+The preflight has no timeout of its own: the SDK already bounds marketplace fetches (an unreachable host fails in ~75s), and the session still reaches init afterwards, so a fetch failure surfaces as the precise "did not load" error above rather than a generic timeout. Tune `CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS` or `CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS` if you need different bounds.
 
 ### Full config reference
 

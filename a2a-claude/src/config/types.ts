@@ -94,6 +94,21 @@ export interface ClaudePluginConfig {
   path: string;
 }
 
+export interface ClaudeMarketplaceSourceConfig {
+  /** Source kind — e.g. "github", "git", "url", "npm", "directory". */
+  source: string;
+  // Forward-compatible passthrough for source-specific fields (repo, url, ref,
+  // sha, path, package, headers, …). Every string value supports ${ENV_VAR}.
+  [key: string]: unknown;
+}
+
+export interface ClaudeMarketplaceConfig {
+  /** Where to fetch the marketplace from. */
+  source: ClaudeMarketplaceSourceConfig;
+  // Forward-compatible passthrough for installLocation, autoUpdate, …
+  [key: string]: unknown;
+}
+
 export interface StructuredOutputFormatConfig {
   /** Only JSON Schema structured output is supported. */
   type: "json_schema";
@@ -112,6 +127,21 @@ export interface ClaudeConfig {
   skills?: "all" | string[];
   /** Local plugins to load. Paths resolve against configDir; ${ENV_VAR} supported. */
   plugins?: ClaudePluginConfig[];
+  /**
+   * Plugin marketplaces to register for the session, keyed by marketplace id.
+   * Maps to the SDK's `settings.extraKnownMarketplaces`, so the SDK fetches and
+   * installs the plugins itself — no pre-baked plugin directories required.
+   * Pin every marketplace by `ref` or `sha`: plugin hooks and bundled MCP
+   * servers execute at the session's permission mode.
+   */
+  marketplaces?: Record<string, ClaudeMarketplaceConfig>;
+  /**
+   * Plugins to enable, keyed `"<plugin-id>@<marketplace-id>"`, where the
+   * marketplace id must appear in `marketplaces`. Maps to the SDK's
+   * `settings.enabledPlugins`. Startup fails if an enabled plugin does not
+   * load — see the plugin preflight in the executor.
+   */
+  enabledPlugins?: Record<string, boolean>;
   /** Per-agent structured output schema. Every task returns a DataPart artifact matching it. */
   outputFormat?: StructuredOutputFormatConfig;
   /**
