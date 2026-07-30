@@ -100,6 +100,28 @@
             "systemPromptAppend": { "type": "string" },
             "customSystemPrompt": { "type": "string" },
             "settingSources": { "type": "array", "items": { "enum": ["user", "project", "local"] } },
+            "marketplaces": {
+              "type": "object",
+              "description": "Plugin marketplaces to register, keyed by marketplace id. Passed through to the SDK's settings.extraKnownMarketplaces.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "object",
+                    "description": "Where to fetch the marketplace from. Source-specific fields (repo, url, path, package, ref, sha, ...) are passed through to the SDK.",
+                    "properties": { "source": { "type": "string", "minLength": 1 } },
+                    "required": ["source"]
+                  }
+                },
+                "required": ["source"]
+              }
+            },
+            "enabledPlugins": {
+              "type": "object",
+              "description": "Plugins to enable, keyed \"<plugin-id>@<marketplace-id>\". The marketplace id must appear in claude.marketplaces.",
+              "propertyNames": { "pattern": "^[^@\\s]+@[^@\\s]+$" },
+              "additionalProperties": { "type": "boolean" }
+            },
             "maxTurns": { "type": "integer", "minimum": 1 },
             "maxBudgetUsd": { "type": "number", "exclusiveMinimum": 0 },
             "additionalDirectories": { "type": "array", "items": { "type": "string" } },

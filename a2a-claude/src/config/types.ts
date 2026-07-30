@@ -57,6 +57,21 @@ export interface ServerConfig {
 
 export type ClaudePermissionMode = "acceptEdits" | "dontAsk" | "plan" | "bypassPermissions";
 
+export interface ClaudeMarketplaceSourceConfig {
+  /** Source kind — e.g. "github", "git", "url", "npm", "directory". */
+  source: string;
+  // Forward-compatible passthrough for source-specific fields (repo, url, ref,
+  // sha, path, package, headers, …). Every string value supports ${ENV_VAR}.
+  [key: string]: unknown;
+}
+
+export interface ClaudeMarketplaceConfig {
+  /** Where to fetch the marketplace from. */
+  source: ClaudeMarketplaceSourceConfig;
+  // Forward-compatible passthrough for installLocation, autoUpdate, …
+  [key: string]: unknown;
+}
+
 /**
  * Claude Agent SDK connection and execution settings.
  * Fields map 1:1 onto @anthropic-ai/claude-agent-sdk Options (see spec §3.1).
@@ -87,6 +102,21 @@ export interface ClaudeConfig {
    * host ~/.claude and project settings. Include "project" to load CLAUDE.md.
    */
   settingSources?: Array<"user" | "project" | "local">;
+  /**
+   * Plugin marketplaces to register for the session, keyed by marketplace id.
+   * Maps to the SDK's `settings.extraKnownMarketplaces`, so the SDK fetches and
+   * installs the plugins itself — no pre-baked plugin directories required.
+   * Pin every marketplace by `ref` or `sha`: plugin hooks and bundled MCP
+   * servers execute at the session's permission mode.
+   */
+  marketplaces?: Record<string, ClaudeMarketplaceConfig>;
+  /**
+   * Plugins to enable, keyed `"<plugin-id>@<marketplace-id>"`, where the
+   * marketplace id must appear in `marketplaces`. Maps to the SDK's
+   * `settings.enabledPlugins`. Startup fails if an enabled plugin does not
+   * load — see the plugin preflight in the executor.
+   */
+  enabledPlugins?: Record<string, boolean>;
   /** Max conversation turns per query (runaway protection). */
   maxTurns?: number;
   /** Max budget in USD per query. */

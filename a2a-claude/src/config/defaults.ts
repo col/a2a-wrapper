@@ -30,6 +30,8 @@ export const DEFAULTS: Required<AgentConfig> = {
     allowedTools: [],
     disallowedTools: [],
     settingSources: [],                // isolation: no host ~/.claude leakage
+    marketplaces: {},
+    enabledPlugins: {},
     additionalDirectories: [],
     dangerouslyAllowBypassPermissions: false,
     contextFile: "context.md",
