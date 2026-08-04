@@ -74,6 +74,13 @@ describe("A2ATransport", () => {
     expect(bus.events[0].artifact.artifactId).not.toBe(bus.events[1].artifact.artifactId);
   });
 
+  it("treats a null stream as unstreamed", async () => {
+    const bus = createMockBus();
+    await new A2ATransport(bus as any, "task-1", "ctx-1").send({ ...baseEvent, stream: null as any });
+    expect(bus.events[0].append).toBe(false);
+    expect(bus.events[0].lastChunk).toBe(true);
+  });
+
   it("drops event types with no trace key mapping", async () => {
     const bus = createMockBus();
     await new A2ATransport(bus as any, "t", "c").send({ ...baseEvent, eventType: "context_window" });
