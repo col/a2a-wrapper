@@ -65,7 +65,17 @@ export type EventType =
 export interface AgentEventStream {
   /** Stable identifier shared by every chunk of one logical artifact. */
   id: string;
-  /** True on the final chunk, which closes the artifact. */
+  /**
+   * True on the final chunk, which closes the artifact.
+   *
+   * Per the A2A SDK's `ResultManager`, the closing chunk's parts are
+   * *appended* to the artifact, not substituted — the same behavior that
+   * `publishLastChunkMarker` (see `event-publisher.ts`) relies on for
+   * response text. The closing chunk's payload should therefore repeat the
+   * complete accumulated content (not just the final delta), and consumers
+   * must read the last part rather than concatenate every part — otherwise
+   * the closing chunk's content is double-counted.
+   */
   lastChunk: boolean;
 }
 
@@ -148,8 +158,11 @@ export class A2ATransport implements EventTransport {
     Object.assign(data, event.data);
 
     // A streamed event appends to one stable artifact; an unstreamed event is a
-    // self-contained artifact, exactly as before.
-    const stream = event.stream;
+    // self-contained artifact, exactly as before. Normalize `null` to
+    // `undefined` here so `append`, `lastChunk`, and `artifactId` below all
+    // agree on whether this event is streamed — checking `stream` three
+    // times with three different falsiness tests would let them drift.
+    const stream = event.stream ?? undefined;
     const artifactEvent: TaskArtifactUpdateEvent = {
       kind: "artifact-update",
       taskId: this.taskId,

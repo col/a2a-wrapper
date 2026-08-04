@@ -52,6 +52,28 @@ describe("A2ATransport", () => {
     expect(bus.events[1].artifact.artifactId).toBe("trace.thinking-msg_1-0");
   });
 
+  it("gives two unstreamed sends distinct artifactIds", async () => {
+    const bus = createMockBus();
+    const transport = new A2ATransport(bus as any, "task-1", "ctx-1");
+
+    await transport.send(baseEvent);
+    await transport.send(baseEvent);
+
+    expect(bus.events[0].artifact.artifactId).not.toBe(bus.events[1].artifact.artifactId);
+  });
+
+  it("keeps chunks from two different stream ids on separate artifacts", async () => {
+    const bus = createMockBus();
+    const transport = new A2ATransport(bus as any, "task-1", "ctx-1");
+
+    await transport.send({ ...baseEvent, stream: { id: "msg_1-0", lastChunk: true } });
+    await transport.send({ ...baseEvent, stream: { id: "msg_2-0", lastChunk: true } });
+
+    expect(bus.events[0].artifact.artifactId).toBe("trace.thinking-msg_1-0");
+    expect(bus.events[1].artifact.artifactId).toBe("trace.thinking-msg_2-0");
+    expect(bus.events[0].artifact.artifactId).not.toBe(bus.events[1].artifact.artifactId);
+  });
+
   it("drops event types with no trace key mapping", async () => {
     const bus = createMockBus();
     await new A2ATransport(bus as any, "t", "c").send({ ...baseEvent, eventType: "context_window" });
@@ -71,6 +93,6 @@ describe("AgentEventEmitter", () => {
     await emitter.emit("thinking", { content: "y" });
 
     expect(sent[0].stream).toEqual({ id: "s1", lastChunk: true });
-    expect(sent[1].stream).toBeUndefined();
+    expect("stream" in sent[1]).toBe(false);
   });
 });
