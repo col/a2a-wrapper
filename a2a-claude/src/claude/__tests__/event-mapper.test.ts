@@ -290,6 +290,37 @@ describe("EventMapper", () => {
     ]);
   });
 
+  it("does not let an empty thinking block steal the next block's stream id", () => {
+    // Two thinking blocks opened on one message id; only the second carries
+    // deltas. The empty block must still consume its own FIFO slot, or it
+    // leaves msg_8-0 for the real block to pop — closing an artifact that
+    // never received deltas and leaving msg_8-1 open forever.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+      mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_8" } }));
+      mapper.handleMessage(streamEvent({
+        type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      mapper.handleMessage(streamEvent({ type: "content_block_stop", index: 0 }));
+      mapper.handleMessage(streamEvent({
+        type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "real thought" } }));
+      // The realistic SDK shape: two assistant messages sharing one message id.
+      mapper.handleMessage(thinkingAssistantMsg("msg_8", ""));
+      mapper.handleMessage(thinkingAssistantMsg("msg_8", "real thought"));
+
+      expect(emitted).toEqual([
+        { event: "thinking", data: { content: "real thought" }, stream: { id: "msg_8-1", lastChunk: false } },
+        { event: "thinking", data: { content: "real thought" }, stream: { id: "msg_8-1", lastChunk: true } },
+      ]);
+      expect(JSON.stringify(emitted)).not.toContain("msg_8-0");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("emits a standalone thinking event when no deltas preceded the block", () => {
     const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
     mapper.handleMessage(thinkingAssistantMsg("msg_3", "no deltas here"));

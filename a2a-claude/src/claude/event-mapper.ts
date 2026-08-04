@@ -237,6 +237,15 @@ export class EventMapper {
   private handleThinkingBlock(msg: SDKMessageLike, block: Record<string, unknown>): void {
     const raw = typeof block.thinking === "string" ? block.thinking : "";
 
+    // Claim this block's FIFO slot before the empty-block guard. Every thinking
+    // block that opened in the stream must consume its own id, or an empty block
+    // leaves a stale entry for the next block to pop — closing the wrong artifact
+    // and leaving the one that received the deltas open forever.
+    const inner = msg.message as Record<string, unknown> | undefined;
+    const messageId = typeof inner?.id === "string" ? inner.id : null;
+    const streamId = messageId ? this.takePendingThinkingStream(messageId) : null;
+    if (streamId) this.thinkingStreamLength.delete(streamId);
+
     if (!raw) {
       if (!this.warnedEmptyThinking) {
         this.warnedEmptyThinking = true;
@@ -251,15 +260,11 @@ export class EventMapper {
     }
 
     const content = redactSecrets(raw).substring(0, MAX_THINKING_LENGTH);
-    const inner = msg.message as Record<string, unknown> | undefined;
-    const messageId = typeof inner?.id === "string" ? inner.id : null;
-    const streamId = messageId ? this.takePendingThinkingStream(messageId) : null;
 
     // Mirrors publishLastChunkMarker for response text: the complete block is
     // re-sent as the closing chunk so a consumer that missed deltas still gets
     // the whole thought. With no deltas, it is a standalone artifact as before.
     if (streamId) {
-      this.thinkingStreamLength.delete(streamId);
       this.emitter.emit("thinking", { content }, { id: streamId, lastChunk: true });
       return;
     }
