@@ -189,6 +189,13 @@ describe("EventMapper", () => {
       expect(emitted).toEqual([]);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0][0])).toContain("omitted");
+
+      // A second mapper (i.e. a second A2A task) must warn again — this is
+      // per-instance, not process-wide, so a misconfigured deployment keeps
+      // resurfacing the problem rather than going quiet after the first task.
+      const second = makeMapper().mapper;
+      second.handleMessage(assistantMsg([{ type: "thinking", thinking: "", signature: "Ev3" }]));
+      expect(warn).toHaveBeenCalledTimes(2);
     } finally {
       warn.mockRestore();
     }

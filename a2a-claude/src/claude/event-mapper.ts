@@ -21,6 +21,7 @@ const log = logger.child("event-mapper");
 const MAX_OUTPUT_LENGTH = 10_000;
 const MAX_COMMAND_LENGTH = 500;
 const MAX_THINKING_LENGTH = 10_000;
+const MAX_MESSAGE_LENGTH = 2_000;
 
 const SENSITIVE_KEYS = new Set([
   "token", "access_token", "authorization", "api_key", "apikey",
@@ -46,7 +47,7 @@ function redactSecrets(text: string): string {
 
 export function sanitizeMessage(msg: unknown): string {
   if (typeof msg !== "string") return "An error occurred.";
-  return redactSecrets(msg).substring(0, 2000);
+  return redactSecrets(msg).substring(0, MAX_MESSAGE_LENGTH);
 }
 
 function sanitizeData(data: unknown): unknown {
@@ -79,7 +80,11 @@ function truncateOutput(output: unknown): string {
 export class EventMapper {
   private readonly emitter: AgentEventEmitter;
   private readonly config: Required<AgentConfig>;
-  /** Warn once per execution about empty thinking blocks; more would be noise. */
+  /**
+   * Warn at most once per EventMapper — i.e. once per A2A task, since the executor
+   * constructs one per execute(). Deliberately not process-wide: a misconfigured
+   * deployment should resurface on every affected task rather than going quiet.
+   */
   private warnedEmptyThinking = false;
 
   constructor(emitter: AgentEventEmitter, config: Required<AgentConfig>) {
@@ -225,9 +230,10 @@ export class EventMapper {
       if (!this.warnedEmptyThinking) {
         this.warnedEmptyThinking = true;
         log.warn(
-          "Received a thinking block with no content. The SDK returns empty thinking " +
-          'when thinking.display is "omitted", which is the default on current models. ' +
-          'Set claude.thinking to { "type": "adaptive", "display": "summarized" } to receive content.',
+          'Received a thinking block with no content, which means the SDK returned display: "omitted". ' +
+          'If claude.thinking is set below, that setting is the cause — change its display to "summarized". ' +
+          "If it is null, the wrapper already requested summarized thinking and the model or SDK version did not honour it.",
+          { configuredThinking: this.config.claude.thinking ?? null },
         );
       }
       return;
