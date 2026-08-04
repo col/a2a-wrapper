@@ -86,6 +86,16 @@ export class EventMapper {
    * deployment should resurface on every affected task rather than going quiet.
    */
   private warnedEmptyThinking = false;
+  /**
+   * Stream ids of thinking blocks whose deltas have been seen, queued per SDK
+   * message id. A FIFO — not an index lookup — because the SDK's assistant
+   * content-array position does not match the stream content_block index.
+   */
+  private readonly pendingThinkingStreams = new Map<string, string[]>();
+  /** Characters already emitted per thinking stream id, for the truncation budget. */
+  private readonly thinkingStreamLength = new Map<string, number>();
+  /** Message id of the in-flight streamed message, from the last message_start. */
+  private currentStreamMessageId: string | null = null;
 
   constructor(emitter: AgentEventEmitter, config: Required<AgentConfig>) {
     this.emitter = emitter;
@@ -108,7 +118,8 @@ export class EventMapper {
           this.handleResult(msg);
           break;
         case "stream_event":
-          break; // consumed by the executor for artifact deltas
+          this.handleStreamEvent(msg);
+          break;
         default:
           log.debug("Unhandled SDK message type", { type: msg.type });
       }
@@ -143,7 +154,7 @@ export class EventMapper {
       const block = rawBlock as Record<string, unknown>;
 
       if (block.type === "thinking") {
-        if (features.emitThinkingEvents) this.handleThinkingBlock(block);
+        if (features.emitThinkingEvents) this.handleThinkingBlock(msg, block);
         continue;
       }
 
@@ -223,7 +234,7 @@ export class EventMapper {
    * `display: "omitted"` — the default on current models. That is a config
    * problem, not a model problem, so say so rather than dropping it silently.
    */
-  private handleThinkingBlock(block: Record<string, unknown>): void {
+  private handleThinkingBlock(msg: SDKMessageLike, block: Record<string, unknown>): void {
     const raw = typeof block.thinking === "string" ? block.thinking : "";
 
     if (!raw) {
@@ -239,9 +250,80 @@ export class EventMapper {
       return;
     }
 
-    this.emitter.emit("thinking", {
-      content: redactSecrets(raw).substring(0, MAX_THINKING_LENGTH),
-    });
+    const content = redactSecrets(raw).substring(0, MAX_THINKING_LENGTH);
+    const inner = msg.message as Record<string, unknown> | undefined;
+    const messageId = typeof inner?.id === "string" ? inner.id : null;
+    const streamId = messageId ? this.takePendingThinkingStream(messageId) : null;
+
+    // Mirrors publishLastChunkMarker for response text: the complete block is
+    // re-sent as the closing chunk so a consumer that missed deltas still gets
+    // the whole thought. With no deltas, it is a standalone artifact as before.
+    if (streamId) {
+      this.thinkingStreamLength.delete(streamId);
+      this.emitter.emit("thinking", { content }, { id: streamId, lastChunk: true });
+      return;
+    }
+    this.emitter.emit("thinking", { content });
+  }
+
+  /**
+   * Emit incremental thinking from raw stream events.
+   *
+   * Only runs when artifact streaming is on, because `includePartialMessages`
+   * is itself derived from that flag. Each thinking block is registered on a
+   * per-message FIFO at `content_block_start` and consumed by the matching
+   * complete block in `handleAssistant`.
+   */
+  private handleStreamEvent(msg: SDKMessageLike): void {
+    const features = this.config.features;
+    if (!features.emitThinkingEvents) return;
+    if (features.streamArtifactChunks !== true) return;
+    if (msg.parent_tool_use_id != null) return;
+
+    const event = msg.event as Record<string, unknown> | undefined;
+    if (!event) return;
+
+    if (event.type === "message_start") {
+      const message = event.message as Record<string, unknown> | undefined;
+      this.currentStreamMessageId = typeof message?.id === "string" ? message.id : null;
+      return;
+    }
+
+    const messageId = this.currentStreamMessageId;
+    if (!messageId) return;
+    const streamId = `${messageId}-${String(event.index ?? 0)}`;
+
+    if (event.type === "content_block_start") {
+      const block = event.content_block as Record<string, unknown> | undefined;
+      if (block?.type !== "thinking") return;
+      const queue = this.pendingThinkingStreams.get(messageId) ?? [];
+      queue.push(streamId);
+      this.pendingThinkingStreams.set(messageId, queue);
+      this.thinkingStreamLength.set(streamId, 0);
+      return;
+    }
+
+    if (event.type !== "content_block_delta") return;
+    const delta = event.delta as Record<string, unknown> | undefined;
+    if (delta?.type !== "thinking_delta" || typeof delta.thinking !== "string") return;
+
+    // Unknown stream id means this block never opened as a thinking block.
+    const used = this.thinkingStreamLength.get(streamId);
+    if (used === undefined || used >= MAX_THINKING_LENGTH) return;
+
+    const text = redactSecrets(delta.thinking).substring(0, MAX_THINKING_LENGTH - used);
+    if (!text) return;
+    this.thinkingStreamLength.set(streamId, used + text.length);
+    this.emitter.emit("thinking", { content: text }, { id: streamId, lastChunk: false });
+  }
+
+  /** Pop the next unmatched streamed thinking block for this message, if any. */
+  private takePendingThinkingStream(messageId: string): string | null {
+    const queue = this.pendingThinkingStreams.get(messageId);
+    if (!queue || queue.length === 0) return null;
+    const streamId = queue.shift() as string;
+    if (queue.length === 0) this.pendingThinkingStreams.delete(messageId);
+    return streamId;
   }
 
   private handleUser(msg: SDKMessageLike): void {

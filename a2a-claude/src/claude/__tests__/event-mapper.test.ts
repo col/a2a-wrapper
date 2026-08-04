@@ -4,12 +4,14 @@ import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig, FeatureFlags } from "../../config/types.js";
 import type { AgentEventEmitter } from "@a2a-wrapper/core";
 
-type Emitted = { event: string; data: Record<string, unknown> };
+type Emitted = { event: string; data: Record<string, unknown>; stream?: { id: string; lastChunk: boolean } };
 
 function makeMapper(features: Partial<FeatureFlags> = {}) {
   const emitted: Emitted[] = [];
   const emitter = {
-    emit: (event: string, data: Record<string, unknown>) => { emitted.push({ event, data }); },
+    emit: (event: string, data: Record<string, unknown>, stream?: { id: string; lastChunk: boolean }) => {
+      emitted.push(stream ? { event, data, stream } : { event, data });
+    },
   } as unknown as AgentEventEmitter;
   const config = { ...DEFAULTS, features: { ...DEFAULTS.features, ...features } } as Required<AgentConfig>;
   return { mapper: new EventMapper(emitter, config), emitted };
@@ -209,6 +211,128 @@ describe("EventMapper", () => {
       message: { content: [{ type: "tool_result", tool_use_id: "t", content: "Authorization: Bearer sk-ant-secret123" }] },
     });
     expect(emitted[0].data.output as string).not.toContain("sk-ant-secret123");
+  });
+
+  const streamEvent = (event: Record<string, unknown>) => ({
+    type: "stream_event",
+    parent_tool_use_id: null,
+    event,
+  });
+
+  const thinkingAssistantMsg = (id: string, thinking: string) => ({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { id, content: [{ type: "thinking", thinking }] },
+  });
+
+  it("streams thinking deltas and closes the block with the complete text", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_1" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me " } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "check." } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "Ev1" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_1", "Let me check."));
+
+    expect(emitted).toEqual([
+      { event: "thinking", data: { content: "Let me " }, stream: { id: "msg_1-0", lastChunk: false } },
+      { event: "thinking", data: { content: "check." }, stream: { id: "msg_1-0", lastChunk: false } },
+      { event: "thinking", data: { content: "Let me check." }, stream: { id: "msg_1-0", lastChunk: true } },
+    ]);
+  });
+
+  it("correlates by message id, not by assistant content-array position", () => {
+    // Observed SDK behaviour: thinking is stream index 0 and text is stream
+    // index 1, but the text-only assistant message reports its block at array
+    // position 0 and shares the thinking message's id. Correlating on array
+    // position would mis-pair them.
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_2" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_2", "reasoning"));
+    mapper.handleMessage(streamEvent({ type: "content_block_stop", index: 0 }));
+    mapper.handleMessage(streamEvent({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } }));
+    mapper.handleMessage({
+      type: "assistant", parent_tool_use_id: null,
+      message: { id: "msg_2", content: [{ type: "text", text: "answer" }] },
+    });
+
+    expect(emitted).toEqual([
+      { event: "thinking", data: { content: "reasoning" }, stream: { id: "msg_2-0", lastChunk: false } },
+      { event: "thinking", data: { content: "reasoning" }, stream: { id: "msg_2-0", lastChunk: true } },
+    ]);
+  });
+
+  it("closes a thinking stream opened at a non-zero content_block index", () => {
+    // The discriminating case for the FIFO: thinking opens at stream index 1
+    // (a text block took index 0) but is reported at array position 0 of its
+    // assistant message. An index lookup would search for "msg_7-0" and miss.
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_7" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "prelude" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_stop", index: 0 }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "later thought" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_7", "later thought"));
+
+    expect(emitted).toEqual([
+      { event: "thinking", data: { content: "later thought" }, stream: { id: "msg_7-1", lastChunk: false } },
+      { event: "thinking", data: { content: "later thought" }, stream: { id: "msg_7-1", lastChunk: true } },
+    ]);
+  });
+
+  it("emits a standalone thinking event when no deltas preceded the block", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(thinkingAssistantMsg("msg_3", "no deltas here"));
+    expect(emitted).toEqual([{ event: "thinking", data: { content: "no deltas here" } }]);
+  });
+
+  it("ignores thinking deltas when streaming is off", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: false });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_4" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hidden" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_4", "hidden"));
+    expect(emitted).toEqual([{ event: "thinking", data: { content: "hidden" } }]);
+  });
+
+  it("ignores subagent stream events", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage({
+      type: "stream_event", parent_tool_use_id: "tu1",
+      event: { type: "message_start", message: { id: "msg_5" } },
+    });
+    mapper.handleMessage({
+      type: "stream_event", parent_tool_use_id: "tu1",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "sub" } },
+    });
+    expect(emitted).toEqual([]);
+  });
+
+  it("caps streamed thinking at the 10k budget", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_6" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    for (let i = 0; i < 4; i++) {
+      mapper.handleMessage(streamEvent({
+        type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "z".repeat(4000) },
+      }));
+    }
+    const streamedChars = emitted.reduce((n, e) => n + (e.data.content as string).length, 0);
+    expect(streamedChars).toBe(10_000);
   });
 });
 
