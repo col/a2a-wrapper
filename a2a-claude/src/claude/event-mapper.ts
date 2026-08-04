@@ -4,11 +4,16 @@
  * Translates @anthropic-ai/claude-agent-sdk messages into A2A sideband events
  * published via AgentEventEmitter.
  *
- * Sanitization rules (applied to all emitted data):
+ * Sanitization rules (applied to every emitted payload):
  * - Redact fields matching SENSITIVE_KEYS
  * - Truncate tool output to MAX_OUTPUT_LENGTH characters
  * - Never emit file contents (only path + operation kind)
  * - Never emit raw environment variable values
+ *
+ * One qualification: streamed thinking deltas are redacted per chunk, so a
+ * secret spanning a chunk boundary can pass through in an intermediate chunk.
+ * The closing marker re-sends the complete block fully redacted. See the note
+ * in handleStreamEvent.
  */
 
 import type { AgentEventEmitter } from "@a2a-wrapper/core";
@@ -90,9 +95,21 @@ export class EventMapper {
    * Stream ids of thinking blocks whose deltas have been seen, queued per SDK
    * message id. A FIFO — not an index lookup — because the SDK's assistant
    * content-array position does not match the stream content_block index.
+   *
+   * Entries for a turn abandoned mid-flight (interrupt, cancel, error) are left
+   * to be garbage-collected with the mapper, which the executor constructs per
+   * execute(). Response text strands its artifact the same way — executor.ts
+   * returns on resultError before publishLastChunkMarker — so this is consistent
+   * with existing precedent rather than a new failure mode.
    */
   private readonly pendingThinkingStreams = new Map<string, string[]>();
-  /** Characters already emitted per thinking stream id, for the truncation budget. */
+  /**
+   * Per thinking stream id, the characters already emitted. Doubles as the
+   * lifecycle registry: created at content_block_start, incremented per delta,
+   * deleted when handleThinkingBlock closes the stream. Absence therefore means
+   * either "never opened as a thinking block" or "already closed" — both of
+   * which must ignore any further deltas.
+   */
   private readonly thinkingStreamLength = new Map<string, number>();
   /** Message id of the in-flight streamed message, from the last message_start. */
   private currentStreamMessageId: string | null = null;
@@ -244,6 +261,7 @@ export class EventMapper {
     const inner = msg.message as Record<string, unknown> | undefined;
     const messageId = typeof inner?.id === "string" ? inner.id : null;
     const streamId = messageId ? this.takePendingThinkingStream(messageId) : null;
+    const used = streamId ? this.thinkingStreamLength.get(streamId) : undefined;
     if (streamId) this.thinkingStreamLength.delete(streamId);
 
     if (!raw) {
@@ -255,6 +273,11 @@ export class EventMapper {
           "If it is null, the wrapper already requested summarized thinking and the model or SDK version did not honour it.",
           { configuredThinking: this.config.claude.thinking ?? null },
         );
+      }
+      // Close any stream that already emitted deltas; leaving it open strands an
+      // append-mode artifact that never terminates.
+      if (streamId && (used ?? 0) > 0) {
+        this.emitter.emit("thinking", { content: "" }, { id: streamId, lastChunk: true });
       }
       return;
     }
@@ -312,10 +335,16 @@ export class EventMapper {
     const delta = event.delta as Record<string, unknown> | undefined;
     if (delta?.type !== "thinking_delta" || typeof delta.thinking !== "string") return;
 
-    // Unknown stream id means this block never opened as a thinking block.
+    // No entry means the stream either never opened as a thinking block or was
+    // already closed by handleThinkingBlock; both must ignore further deltas.
     const used = this.thinkingStreamLength.get(streamId);
     if (used === undefined || used >= MAX_THINKING_LENGTH) return;
 
+    // Redaction here is per-chunk and so strictly weaker than whole-text
+    // redaction: a secret split across two deltas ("api_key=" / "sk-…") matches
+    // neither chunk and streams verbatim. The closing marker re-sends the whole
+    // block through redactSecrets and IS fully redacted, so the final artifact
+    // state is clean while intermediate chunks may not be. See spec §6.
     const text = redactSecrets(delta.thinking).substring(0, MAX_THINKING_LENGTH - used);
     if (!text) return;
     this.thinkingStreamLength.set(streamId, used + text.length);

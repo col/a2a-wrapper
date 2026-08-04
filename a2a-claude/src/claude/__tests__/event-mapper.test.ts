@@ -338,6 +338,62 @@ describe("EventMapper", () => {
     expect(emitted).toEqual([{ event: "thinking", data: { content: "hidden" } }]);
   });
 
+  it("ignores thinking deltas when emitThinkingEvents is off", () => {
+    // The delta path needs its own guard test: the complete-block gating test
+    // never reaches handleStreamEvent, and the streaming-off test runs with
+    // emitThinkingEvents at its default true.
+    const { mapper, emitted } = makeMapper({ emitThinkingEvents: false, streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_9" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "private" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_9", "private"));
+    expect(emitted).toEqual([]);
+  });
+
+  it("closes a streamed thinking artifact even when the complete block is empty", () => {
+    // Deltas were published, so the append-mode artifact exists. An empty
+    // complete block must still terminate it, or it stays open forever.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+      mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_10" } }));
+      mapper.handleMessage(streamEvent({
+        type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "partial" } }));
+      mapper.handleMessage(thinkingAssistantMsg("msg_10", ""));
+
+      expect(emitted).toEqual([
+        { event: "thinking", data: { content: "partial" }, stream: { id: "msg_10-0", lastChunk: false } },
+        { event: "thinking", data: { content: "" }, stream: { id: "msg_10-0", lastChunk: true } },
+      ]);
+      // The empty block still warns, exactly as before.
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("closes with content equal to the concatenated deltas when nothing is redacted", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    const parts = ["Step one. ", "Step two. ", "Step three."];
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_11" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    for (const part of parts) {
+      mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: part } }));
+    }
+    mapper.handleMessage(thinkingAssistantMsg("msg_11", parts.join("")));
+
+    const streamed = emitted.filter((e) => e.stream?.lastChunk === false).map((e) => e.data.content as string).join("");
+    const closing = emitted[emitted.length - 1];
+    expect(closing.stream).toEqual({ id: "msg_11-0", lastChunk: true });
+    expect(closing.data.content).toBe(streamed);
+  });
+
   it("ignores subagent stream events", () => {
     const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
     mapper.handleMessage({
