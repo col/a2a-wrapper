@@ -107,4 +107,23 @@ describe("buildQueryOptions", () => {
     expect(opts.allowDangerouslySkipPermissions).toBe(true);
     expect(opts.mcpServers).toEqual({ srv: { type: "stdio", command: "x" } });
   });
+
+  it("requests summarized adaptive thinking by default", () => {
+    // Regression guard: without an explicit display the SDK defaults to
+    // "omitted" on current models and returns empty thinking blocks, so the
+    // sideband thinking events have nothing to publish.
+    const opts = buildQueryOptions(cfg(), {});
+    expect(opts.thinking).toEqual({ type: "adaptive", display: "summarized" });
+  });
+
+  it("passes an explicit claude.thinking through unchanged", () => {
+    const opts = buildQueryOptions(cfg({ thinking: { type: "enabled", budgetTokens: 4096 } }), {});
+    expect(opts.thinking).toEqual({ type: "enabled", budgetTokens: 4096 });
+  });
+
+  it("omits thinking when emitThinkingEvents is off", () => {
+    const c = cfg();
+    c.features = { ...c.features, emitThinkingEvents: false };
+    expect(buildQueryOptions(c, {}).thinking).toBeUndefined();
+  });
 });

@@ -73,6 +73,19 @@ export interface ClaudeMarketplaceConfig {
 }
 
 /**
+ * Controls Claude's thinking/reasoning behaviour. Mirrors the Claude Agent SDK's
+ * `ThinkingConfig`, declared locally so that the SDK import stays confined to
+ * `claude/client-factory.ts`.
+ *
+ * `display` matters: the SDK default on current models is `"omitted"`, which
+ * returns thinking blocks with an empty `thinking` string.
+ */
+export type ClaudeThinkingConfig =
+  | { type: "adaptive"; display?: "summarized" | "omitted" }
+  | { type: "enabled"; budgetTokens?: number; display?: "summarized" | "omitted" }
+  | { type: "disabled" };
+
+/**
  * Claude Agent SDK connection and execution settings.
  * Fields map 1:1 onto @anthropic-ai/claude-agent-sdk Options (see spec §3.1).
  */
@@ -83,6 +96,12 @@ export interface ClaudeConfig {
   model?: string;
   /** Fallback model when the primary is overloaded/unavailable. */
   fallbackModel?: string;
+  /**
+   * Thinking/reasoning behaviour. When omitted and `features.emitThinkingEvents`
+   * is on, defaults to `{ type: "adaptive", display: "summarized" }` so that
+   * thinking blocks actually carry content.
+   */
+  thinking?: ClaudeThinkingConfig;
   /**
    * Permission mode. "default" and "auto" are rejected — they require an
    * interactive approver / classifier, incompatible with headless A2A.

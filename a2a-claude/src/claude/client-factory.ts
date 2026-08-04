@@ -8,7 +8,7 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentConfig } from "../config/types.js";
+import type { AgentConfig, ClaudeThinkingConfig } from "../config/types.js";
 import { buildMcpServers } from "./mcp-adapter.js";
 
 // ─── Narrow Interfaces (for testability) ────────────────────────────────────
@@ -42,6 +42,7 @@ export interface QueryOptionsLike {
   strictMcpConfig?: boolean;
   persistSession?: boolean;
   includePartialMessages?: boolean;
+  thinking?: ClaudeThinkingConfig;
   mcpServers?: Record<string, unknown>;
   resume?: string;
   abortController?: AbortController;
@@ -89,6 +90,15 @@ export function buildQueryOptions(
 
   const mcpServers = buildMcpServers(config.mcp ?? {});
 
+  // The SDK defaults to display "omitted" on current models, which yields
+  // thinking blocks with an empty string — nothing for the sideband thinking
+  // events to publish. Ask for summaries whenever those events are enabled.
+  const thinking: ClaudeThinkingConfig | undefined =
+    claude.thinking ??
+    (config.features.emitThinkingEvents
+      ? { type: "adaptive", display: "summarized" }
+      : undefined);
+
   // `settings` is the SDK's flag-tier settings object, so marketplace plugins
   // compose with settingSources rather than competing with it — callers keeping
   // full isolation (settingSources: []) still get their plugins.
@@ -123,6 +133,7 @@ export function buildQueryOptions(
     strictMcpConfig: true,
     persistSession: true,
     includePartialMessages: config.features.streamArtifactChunks === true,
+    thinking,
     mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     resume: turn.resume,
     abortController: turn.abortController,
