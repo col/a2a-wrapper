@@ -94,6 +94,36 @@
             "workingDirectory": { "type": "string" },
             "model": { "type": "string" },
             "fallbackModel": { "type": "string" },
+            "thinking": {
+              "description": "Thinking/reasoning behaviour. Defaults to { \"type\": \"adaptive\", \"display\": \"summarized\" } when features.emitThinkingEvents is on; without an explicit display the SDK returns empty thinking blocks on current models.",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": { "const": "adaptive" },
+                    "display": { "enum": ["summarized", "omitted"] }
+                  },
+                  "required": ["type"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": { "const": "enabled" },
+                    "budgetTokens": { "type": "integer", "minimum": 1 },
+                    "display": { "enum": ["summarized", "omitted"] }
+                  },
+                  "required": ["type"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": { "type": { "const": "disabled" } },
+                  "required": ["type"]
+                }
+              ]
+            },
             "permissionMode": { "enum": ["acceptEdits", "dontAsk", "plan", "bypassPermissions"] },
             "allowedTools": { "type": "array", "items": { "type": "string" } },
             "disallowedTools": { "type": "array", "items": { "type": "string" } },
