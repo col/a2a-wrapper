@@ -20,6 +20,7 @@ const log = logger.child("event-mapper");
 
 const MAX_OUTPUT_LENGTH = 10_000;
 const MAX_COMMAND_LENGTH = 500;
+const MAX_THINKING_LENGTH = 10_000;
 
 const SENSITIVE_KEYS = new Set([
   "token", "access_token", "authorization", "api_key", "apikey",
@@ -78,6 +79,8 @@ function truncateOutput(output: unknown): string {
 export class EventMapper {
   private readonly emitter: AgentEventEmitter;
   private readonly config: Required<AgentConfig>;
+  /** Warn once per execution about empty thinking blocks; more would be noise. */
+  private warnedEmptyThinking = false;
 
   constructor(emitter: AgentEventEmitter, config: Required<AgentConfig>) {
     this.emitter = emitter;
@@ -135,9 +138,7 @@ export class EventMapper {
       const block = rawBlock as Record<string, unknown>;
 
       if (block.type === "thinking") {
-        if (features.emitThinkingEvents && typeof block.thinking === "string" && block.thinking) {
-          this.emitter.emit("thinking", { content: redactSecrets(block.thinking).substring(0, 2000) });
-        }
+        if (features.emitThinkingEvents) this.handleThinkingBlock(block);
         continue;
       }
 
@@ -208,6 +209,33 @@ export class EventMapper {
         });
       }
     }
+  }
+
+  /**
+   * Publish one complete thinking block.
+   *
+   * An empty `thinking` string means the SDK returned the block with
+   * `display: "omitted"` — the default on current models. That is a config
+   * problem, not a model problem, so say so rather than dropping it silently.
+   */
+  private handleThinkingBlock(block: Record<string, unknown>): void {
+    const raw = typeof block.thinking === "string" ? block.thinking : "";
+
+    if (!raw) {
+      if (!this.warnedEmptyThinking) {
+        this.warnedEmptyThinking = true;
+        log.warn(
+          "Received a thinking block with no content. The SDK returns empty thinking " +
+          'when thinking.display is "omitted", which is the default on current models. ' +
+          'Set claude.thinking to { "type": "adaptive", "display": "summarized" } to receive content.',
+        );
+      }
+      return;
+    }
+
+    this.emitter.emit("thinking", {
+      content: redactSecrets(raw).substring(0, MAX_THINKING_LENGTH),
+    });
   }
 
   private handleUser(msg: SDKMessageLike): void {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { EventMapper, sanitizeMessage } from "../event-mapper.js";
 import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig, FeatureFlags } from "../../config/types.js";
@@ -169,14 +169,29 @@ describe("EventMapper", () => {
     expect(out).toContain("<redacted>");
   });
 
-  it("redacts and truncates thinking content", () => {
+  it("redacts and truncates thinking content at the 10k cap", () => {
     const { mapper, emitted } = makeMapper();
     mapper.handleMessage(assistantMsg([
-      { type: "thinking", thinking: "the file has api_key=sk-live-9 in it " + "x".repeat(3000) },
+      { type: "thinking", thinking: "the file has api_key=sk-live-9 in it " + "x".repeat(20_000) },
     ]));
     const content = emitted[0].data.content as string;
     expect(content).not.toContain("sk-live-9");
-    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content.length).toBe(10_000);
+  });
+
+  it("drops an empty thinking block and warns exactly once per mapper", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { mapper, emitted } = makeMapper();
+      mapper.handleMessage(assistantMsg([{ type: "thinking", thinking: "", signature: "Ev1" }]));
+      mapper.handleMessage(assistantMsg([{ type: "thinking", thinking: "", signature: "Ev2" }]));
+
+      expect(emitted).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("omitted");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("redacts Bearer tokens fully", () => {
