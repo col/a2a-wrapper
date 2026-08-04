@@ -539,6 +539,16 @@ git commit -m "fix(a2a-claude): raise thinking cap to 10k and warn on empty thin
 - Modify: `a2a-claude/src/claude/event-mapper.ts`
 - Test: `a2a-claude/src/claude/__tests__/event-mapper.test.ts`
 
+**Decision carried over from Task 3's review:** thinking is truncated with a bare
+`substring`, unlike `truncateOutput`, which appends `\n... [truncated, N total chars]`.
+A consumer receiving exactly 10,000 characters therefore cannot tell whether the model
+stopped there or the mapper cut it — a silent discard, which is the same class of
+problem this whole change exists to fix. It is *not* fixed here. Adding the marker to
+the buffered path alone would break §4's requirement that streamed and buffered
+consumers observe identical content, and adding it to both means the delta stream ends
+with a synthetic chunk that was never model output. Left as-is deliberately; revisit
+only if operators actually hit the cap in practice.
+
 - [ ] **Step 1: Update the test emitter mock to capture the stream argument**
 
 In `a2a-claude/src/claude/__tests__/event-mapper.test.ts`, change the `Emitted` type and `makeMapper` mock:
