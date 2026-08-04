@@ -68,6 +68,7 @@ export type {
   EventTransport,
   EventTransportFn,
   AgentEvent,
+  AgentEventStream,
   EventType,
 } from "./events/transport.js";
 
