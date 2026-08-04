@@ -10,3 +10,5 @@ Publish Claude's thinking output over A2A.
 When `features.streamArtifactChunks` is on, thinking also streams incrementally. `@a2a-wrapper/core` gains an optional `stream` field on `AgentEvent`, which `A2ATransport` publishes with A2A append semantics — one stable `artifactId` per thinking block, closed by a final chunk carrying the complete text, matching how response text already streams. The field is optional and the unstreamed path is unchanged, so other wrappers are unaffected.
 
 Thinking content is now truncated at 10,000 characters rather than 2,000, matching the existing tool-output cap.
+
+**This is on by default.** `features.emitThinkingEvents` already defaulted to `true`, so existing deployments begin requesting summarized thinking on upgrade. Expect some change in token usage and latency, and note that reasoning text now flows onto the A2A bus where none did before — relevant if you persist trace artifacts. Set `features.emitThinkingEvents: false`, or `claude.thinking` to `{ "type": "disabled" }`, to opt out.

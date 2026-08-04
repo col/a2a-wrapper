@@ -276,6 +276,14 @@ export class EventMapper {
       }
       // Close any stream that already emitted deltas; leaving it open strands an
       // append-mode artifact that never terminates.
+      //
+      // The closing payload is empty because the SDK gave us no text to re-send,
+      // so this is the one case where a consumer following the documented
+      // "read the last part" rule renders nothing despite deltas having arrived.
+      // Buffering the accumulated deltas purely to serve this path is not worth
+      // the memory: it needs the SDK to stream thinking_delta for a block it then
+      // reports as empty, which contradicts the measured behaviour where deltas
+      // sum exactly to the complete block.
       if (streamId && (used ?? 0) > 0) {
         this.emitter.emit("thinking", { content: "" }, { id: streamId, lastChunk: true });
       }

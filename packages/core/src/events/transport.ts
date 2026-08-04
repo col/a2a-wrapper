@@ -61,6 +61,16 @@ export type EventType =
  * Transports that support append semantics (see {@link A2ATransport}) use `id`
  * to keep every chunk on one artifact and `lastChunk` to close it. Mirrors the
  * `publishStreamingChunk` / `publishLastChunkMarker` pair used for response text.
+ *
+ * **Ordering is only guaranteed on order-preserving transports.** There is no
+ * sequence number: chunks are ordered solely by the order `send()` is called.
+ * {@link A2ATransport} preserves it because `send()` reaches `bus.publish()`
+ * with no intervening `await`. {@link HttpTransport} does not — it issues one
+ * `fetch()` per event, so consecutive chunks can arrive out of order, as can
+ * any custom transport that awaits before dispatching. Because the closing
+ * chunk always repeats the complete accumulated content (see `lastChunk`), a
+ * collector that reads only the closing chunk is correct on any transport;
+ * one that renders chunks live needs an order-preserving transport.
  */
 export interface AgentEventStream {
   /** Stable identifier shared by every chunk of one logical artifact. */
