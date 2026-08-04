@@ -836,7 +836,22 @@ git commit -m "feat(a2a-claude): stream thinking deltas as append-mode trace art
 **Files:**
 - Modify: `a2a-claude/schemas/agent-config.schema.json`
 - Modify: `a2a-claude/README.md`
+- Modify: `packages/core/README.md`
 - Create: `.changeset/thinking-events.md`
+
+- [ ] **Step 0: Document the new core export**
+
+`packages/core/README.md` carries the canonical public-API table for the package, and Task 1 added a new public export that is missing from it. In the **Event Transport** export table, add this row immediately after the `AgentEvent` row:
+
+```markdown
+| `AgentEventStream` | Optional `stream` marker on an `AgentEvent` — `id` keeps every chunk on one artifact, `lastChunk` closes it. Set it to publish append-mode streamed trace artifacts. |
+```
+
+And update the existing `AgentEvent` row to mention the field:
+
+```markdown
+| `AgentEvent` | Structured event with `eventId`, `eventType`, `agentId`, `traceId`, `data`, and an optional `stream` marker. |
+```
 
 - [ ] **Step 1: Add `thinking` to the JSON schema**
 
