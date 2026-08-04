@@ -100,6 +100,13 @@ export interface ClaudeConfig {
    * Thinking/reasoning behaviour. When omitted and `features.emitThinkingEvents`
    * is on, defaults to `{ type: "adaptive", display: "summarized" }` so that
    * thinking blocks actually carry content.
+   *
+   * This is a discriminated union, not a dictionary — unlike `marketplaces`,
+   * `mcp`, or `sandbox`, deep-merging two layers that set different `type`
+   * values produces an invalid hybrid (e.g. `{ type: "enabled", ... }` merged
+   * with `{ type: "disabled" }` deep-merges to `{ type: "disabled", budgetTokens: ... }`).
+   * The config loader's deep-merge does not special-case this field, so set
+   * `thinking` in a single config layer.
    */
   thinking?: ClaudeThinkingConfig;
   /**
@@ -171,7 +178,14 @@ export interface SessionConfig {
 export interface FeatureFlags {
   /** Stream artifact chunks (A2A spec-correct) vs single buffered artifact. Default: false. */
   streamArtifactChunks?: boolean;
-  /** Publish thinking summaries as sideband events. Default: true. */
+  /**
+   * Publish thinking summaries as sideband events. Default: true.
+   * Also controls whether `buildQueryOptions` requests summarized thinking
+   * from the SDK (see `claude.thinking`): when this is on and `claude.thinking`
+   * is not set explicitly, it resolves to `{ type: "adaptive", display: "summarized" }`.
+   * Turning it off does not disable thinking outright — it falls back to
+   * `undefined`, i.e. the SDK's own defaults, not `{ type: "disabled" }`.
+   */
   emitThinkingEvents?: boolean;
   /** Publish tool_call_start/end sideband events. Default: true. */
   emitToolEvents?: boolean;

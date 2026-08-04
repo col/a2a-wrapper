@@ -18,6 +18,7 @@ export type {
   AgentConfig,
   ClaudeConfig,
   ClaudePermissionMode,
+  ClaudeThinkingConfig,
   FeatureFlags,
   McpStdioServerConfig,
   McpHttpServerConfig,

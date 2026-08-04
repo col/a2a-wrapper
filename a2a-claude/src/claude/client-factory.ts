@@ -99,6 +99,12 @@ export function buildQueryOptions(
       ? { type: "adaptive", display: "summarized" }
       : undefined);
 
+  // The local ClaudeThinkingConfig mirrors the SDK's ThinkingConfig by hand so the
+  // SDK import stays confined to this file. This fails the build if they diverge.
+  type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+  const _thinkingMatchesSdk: AssertEqual<ClaudeThinkingConfig, NonNullable<Options["thinking"]>> = true;
+  void _thinkingMatchesSdk;
+
   // `settings` is the SDK's flag-tier settings object, so marketplace plugins
   // compose with settingSources rather than competing with it — callers keeping
   // full isolation (settingSources: []) still get their plugins.
