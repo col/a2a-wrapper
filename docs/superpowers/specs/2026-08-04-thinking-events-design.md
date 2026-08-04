@@ -151,8 +151,22 @@ for a two-line arithmetic question.
 
 The cap is a per-block budget applied to both paths. In the streaming path the
 mapper stops emitting deltas once a block's accumulated emitted length reaches
-the cap, and the `lastChunk` marker carries the same truncated text. Streamed and
-buffered consumers therefore observe identical content.
+the cap, and the `lastChunk` marker carries the same truncated text.
+
+Streamed and buffered consumers therefore observe identical content **except
+where redaction fires**. Because `redactSecrets` is applied per emitted chunk
+(see §6), a secret spanning two deltas is redacted in the closing marker but not
+in the deltas, so the two representations differ in both content and length. An
+earlier draft of this spec claimed the two are always identical; that was wrong,
+and it matters because the decision recorded below leans on the claim.
+
+That is also why thinking is truncated with a bare `substring` rather than the
+`\n... [truncated, N total chars]` marker `truncateOutput` appends for tool
+output. Adding the marker to the buffered path alone widens the divergence above;
+adding it to both means the delta stream ends with a synthetic chunk that was
+never model output. Neither is clearly better than a silent cut at a cap that is
+now 5× larger, so the bare `substring` stands — revisit only if operators
+actually hit the cap in practice.
 
 ### 5. Diagnostics
 
