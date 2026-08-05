@@ -1,15 +1,17 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { EventMapper, sanitizeMessage } from "../event-mapper.js";
 import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig, FeatureFlags } from "../../config/types.js";
 import type { AgentEventEmitter } from "@a2a-wrapper/core";
 
-type Emitted = { event: string; data: Record<string, unknown> };
+type Emitted = { event: string; data: Record<string, unknown>; stream?: { id: string; lastChunk: boolean } };
 
 function makeMapper(features: Partial<FeatureFlags> = {}) {
   const emitted: Emitted[] = [];
   const emitter = {
-    emit: (event: string, data: Record<string, unknown>) => { emitted.push({ event, data }); },
+    emit: (event: string, data: Record<string, unknown>, stream?: { id: string; lastChunk: boolean }) => {
+      emitted.push(stream ? { event, data, stream } : { event, data });
+    },
   } as unknown as AgentEventEmitter;
   const config = { ...DEFAULTS, features: { ...DEFAULTS.features, ...features } } as Required<AgentConfig>;
   return { mapper: new EventMapper(emitter, config), emitted };
@@ -169,14 +171,36 @@ describe("EventMapper", () => {
     expect(out).toContain("<redacted>");
   });
 
-  it("redacts and truncates thinking content", () => {
+  it("redacts and truncates thinking content at the 10k cap", () => {
     const { mapper, emitted } = makeMapper();
     mapper.handleMessage(assistantMsg([
-      { type: "thinking", thinking: "the file has api_key=sk-live-9 in it " + "x".repeat(3000) },
+      { type: "thinking", thinking: "the file has api_key=sk-live-9 in it " + "x".repeat(20_000) },
     ]));
     const content = emitted[0].data.content as string;
     expect(content).not.toContain("sk-live-9");
-    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content.length).toBe(10_000);
+  });
+
+  it("drops an empty thinking block and warns exactly once per mapper", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { mapper, emitted } = makeMapper();
+      mapper.handleMessage(assistantMsg([{ type: "thinking", thinking: "", signature: "Ev1" }]));
+      mapper.handleMessage(assistantMsg([{ type: "thinking", thinking: "", signature: "Ev2" }]));
+
+      expect(emitted).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("omitted");
+
+      // A second mapper (i.e. a second A2A task) must warn again — this is
+      // per-instance, not process-wide, so a misconfigured deployment keeps
+      // resurfacing the problem rather than going quiet after the first task.
+      const second = makeMapper().mapper;
+      second.handleMessage(assistantMsg([{ type: "thinking", thinking: "", signature: "Ev3" }]));
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("redacts Bearer tokens fully", () => {
@@ -187,6 +211,215 @@ describe("EventMapper", () => {
       message: { content: [{ type: "tool_result", tool_use_id: "t", content: "Authorization: Bearer sk-ant-secret123" }] },
     });
     expect(emitted[0].data.output as string).not.toContain("sk-ant-secret123");
+  });
+
+  const streamEvent = (event: Record<string, unknown>) => ({
+    type: "stream_event",
+    parent_tool_use_id: null,
+    event,
+  });
+
+  const thinkingAssistantMsg = (id: string, thinking: string) => ({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { id, content: [{ type: "thinking", thinking }] },
+  });
+
+  it("streams thinking deltas and closes the block with the complete text", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_1" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me " } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "check." } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "Ev1" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_1", "Let me check."));
+
+    expect(emitted).toEqual([
+      { event: "thinking", data: { content: "Let me " }, stream: { id: "msg_1-0", lastChunk: false } },
+      { event: "thinking", data: { content: "check." }, stream: { id: "msg_1-0", lastChunk: false } },
+      { event: "thinking", data: { content: "Let me check." }, stream: { id: "msg_1-0", lastChunk: true } },
+    ]);
+  });
+
+  it("correlates by message id, not by assistant content-array position", () => {
+    // Observed SDK behaviour: thinking is stream index 0 and text is stream
+    // index 1, but the text-only assistant message reports its block at array
+    // position 0 and shares the thinking message's id. Correlating on array
+    // position would mis-pair them.
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_2" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_2", "reasoning"));
+    mapper.handleMessage(streamEvent({ type: "content_block_stop", index: 0 }));
+    mapper.handleMessage(streamEvent({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } }));
+    mapper.handleMessage({
+      type: "assistant", parent_tool_use_id: null,
+      message: { id: "msg_2", content: [{ type: "text", text: "answer" }] },
+    });
+
+    expect(emitted).toEqual([
+      { event: "thinking", data: { content: "reasoning" }, stream: { id: "msg_2-0", lastChunk: false } },
+      { event: "thinking", data: { content: "reasoning" }, stream: { id: "msg_2-0", lastChunk: true } },
+    ]);
+  });
+
+  it("closes a thinking stream opened at a non-zero content_block index", () => {
+    // The discriminating case for the FIFO: thinking opens at stream index 1
+    // (a text block took index 0) but is reported at array position 0 of its
+    // assistant message. An index lookup would search for "msg_7-0" and miss.
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_7" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "prelude" } }));
+    mapper.handleMessage(streamEvent({ type: "content_block_stop", index: 0 }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "later thought" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_7", "later thought"));
+
+    expect(emitted).toEqual([
+      { event: "thinking", data: { content: "later thought" }, stream: { id: "msg_7-1", lastChunk: false } },
+      { event: "thinking", data: { content: "later thought" }, stream: { id: "msg_7-1", lastChunk: true } },
+    ]);
+  });
+
+  it("does not let an empty thinking block steal the next block's stream id", () => {
+    // Two thinking blocks opened on one message id; only the second carries
+    // deltas. The empty block must still consume its own FIFO slot, or it
+    // leaves msg_8-0 for the real block to pop — closing an artifact that
+    // never received deltas and leaving msg_8-1 open forever.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+      mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_8" } }));
+      mapper.handleMessage(streamEvent({
+        type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      mapper.handleMessage(streamEvent({ type: "content_block_stop", index: 0 }));
+      mapper.handleMessage(streamEvent({
+        type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "real thought" } }));
+      // The realistic SDK shape: two assistant messages sharing one message id.
+      mapper.handleMessage(thinkingAssistantMsg("msg_8", ""));
+      mapper.handleMessage(thinkingAssistantMsg("msg_8", "real thought"));
+
+      expect(emitted).toEqual([
+        { event: "thinking", data: { content: "real thought" }, stream: { id: "msg_8-1", lastChunk: false } },
+        { event: "thinking", data: { content: "real thought" }, stream: { id: "msg_8-1", lastChunk: true } },
+      ]);
+      expect(JSON.stringify(emitted)).not.toContain("msg_8-0");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("emits a standalone thinking event when no deltas preceded the block", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(thinkingAssistantMsg("msg_3", "no deltas here"));
+    expect(emitted).toEqual([{ event: "thinking", data: { content: "no deltas here" } }]);
+  });
+
+  it("ignores thinking deltas when streaming is off", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: false });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_4" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hidden" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_4", "hidden"));
+    expect(emitted).toEqual([{ event: "thinking", data: { content: "hidden" } }]);
+  });
+
+  it("ignores thinking deltas when emitThinkingEvents is off", () => {
+    // The delta path needs its own guard test: the complete-block gating test
+    // never reaches handleStreamEvent, and the streaming-off test runs with
+    // emitThinkingEvents at its default true.
+    const { mapper, emitted } = makeMapper({ emitThinkingEvents: false, streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_9" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "private" } }));
+    mapper.handleMessage(thinkingAssistantMsg("msg_9", "private"));
+    expect(emitted).toEqual([]);
+  });
+
+  it("closes a streamed thinking artifact even when the complete block is empty", () => {
+    // Deltas were published, so the append-mode artifact exists. An empty
+    // complete block must still terminate it, or it stays open forever.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+      mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_10" } }));
+      mapper.handleMessage(streamEvent({
+        type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "partial" } }));
+      mapper.handleMessage(thinkingAssistantMsg("msg_10", ""));
+
+      expect(emitted).toEqual([
+        { event: "thinking", data: { content: "partial" }, stream: { id: "msg_10-0", lastChunk: false } },
+        { event: "thinking", data: { content: "" }, stream: { id: "msg_10-0", lastChunk: true } },
+      ]);
+      // The empty block still warns, exactly as before.
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("closes with content equal to the concatenated deltas when nothing is redacted", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    const parts = ["Step one. ", "Step two. ", "Step three."];
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_11" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    for (const part of parts) {
+      mapper.handleMessage(streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: part } }));
+    }
+    mapper.handleMessage(thinkingAssistantMsg("msg_11", parts.join("")));
+
+    const streamed = emitted.filter((e) => e.stream?.lastChunk === false).map((e) => e.data.content as string).join("");
+    const closing = emitted[emitted.length - 1];
+    expect(closing.stream).toEqual({ id: "msg_11-0", lastChunk: true });
+    expect(closing.data.content).toBe(streamed);
+  });
+
+  it("ignores subagent stream events", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage({
+      type: "stream_event", parent_tool_use_id: "tu1",
+      event: { type: "message_start", message: { id: "msg_5" } },
+    });
+    mapper.handleMessage({
+      type: "stream_event", parent_tool_use_id: "tu1",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "sub" } },
+    });
+    expect(emitted).toEqual([]);
+  });
+
+  it("caps streamed thinking at the 10k budget", () => {
+    const { mapper, emitted } = makeMapper({ streamArtifactChunks: true });
+    mapper.handleMessage(streamEvent({ type: "message_start", message: { id: "msg_6" } }));
+    mapper.handleMessage(streamEvent({
+      type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" },
+    }));
+    for (let i = 0; i < 4; i++) {
+      mapper.handleMessage(streamEvent({
+        type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "z".repeat(4000) },
+      }));
+    }
+    const streamedChars = emitted.reduce((n, e) => n + (e.data.content as string).length, 0);
+    expect(streamedChars).toBe(10_000);
   });
 });
 

@@ -73,6 +73,19 @@ export interface ClaudeMarketplaceConfig {
 }
 
 /**
+ * Controls Claude's thinking/reasoning behaviour. Mirrors the Claude Agent SDK's
+ * `ThinkingConfig`, declared locally so that the SDK import stays confined to
+ * `claude/client-factory.ts`.
+ *
+ * `display` matters: the SDK default on current models is `"omitted"`, which
+ * returns thinking blocks with an empty `thinking` string.
+ */
+export type ClaudeThinkingConfig =
+  | { type: "adaptive"; display?: "summarized" | "omitted" }
+  | { type: "enabled"; budgetTokens?: number; display?: "summarized" | "omitted" }
+  | { type: "disabled" };
+
+/**
  * Claude Agent SDK connection and execution settings.
  * Fields map 1:1 onto @anthropic-ai/claude-agent-sdk Options (see spec §3.1).
  */
@@ -83,6 +96,19 @@ export interface ClaudeConfig {
   model?: string;
   /** Fallback model when the primary is overloaded/unavailable. */
   fallbackModel?: string;
+  /**
+   * Thinking/reasoning behaviour. When omitted and `features.emitThinkingEvents`
+   * is on, defaults to `{ type: "adaptive", display: "summarized" }` so that
+   * thinking blocks actually carry content.
+   *
+   * This is a discriminated union, not a dictionary — unlike `marketplaces`,
+   * `mcp`, or `sandbox`, deep-merging two layers that set different `type`
+   * values produces an invalid hybrid (e.g. `{ type: "enabled", ... }` merged
+   * with `{ type: "disabled" }` deep-merges to `{ type: "disabled", budgetTokens: ... }`).
+   * The config loader's deep-merge does not special-case this field, so set
+   * `thinking` in a single config layer.
+   */
+  thinking?: ClaudeThinkingConfig;
   /**
    * Permission mode. "default" and "auto" are rejected — they require an
    * interactive approver / classifier, incompatible with headless A2A.
@@ -152,7 +178,14 @@ export interface SessionConfig {
 export interface FeatureFlags {
   /** Stream artifact chunks (A2A spec-correct) vs single buffered artifact. Default: false. */
   streamArtifactChunks?: boolean;
-  /** Publish thinking summaries as sideband events. Default: true. */
+  /**
+   * Publish thinking summaries as sideband events. Default: true.
+   * Also controls whether `buildQueryOptions` requests summarized thinking
+   * from the SDK (see `claude.thinking`): when this is on and `claude.thinking`
+   * is not set explicitly, it resolves to `{ type: "adaptive", display: "summarized" }`.
+   * Turning it off does not disable thinking outright — it falls back to
+   * `undefined`, i.e. the SDK's own defaults, not `{ type: "disabled" }`.
+   */
   emitThinkingEvents?: boolean;
   /** Publish tool_call_start/end sideband events. Default: true. */
   emitToolEvents?: boolean;

@@ -4,11 +4,16 @@
  * Translates @anthropic-ai/claude-agent-sdk messages into A2A sideband events
  * published via AgentEventEmitter.
  *
- * Sanitization rules (applied to all emitted data):
+ * Sanitization rules (applied to every emitted payload):
  * - Redact fields matching SENSITIVE_KEYS
  * - Truncate tool output to MAX_OUTPUT_LENGTH characters
  * - Never emit file contents (only path + operation kind)
  * - Never emit raw environment variable values
+ *
+ * One qualification: streamed thinking deltas are redacted per chunk, so a
+ * secret spanning a chunk boundary can pass through in an intermediate chunk.
+ * The closing marker re-sends the complete block fully redacted. See the note
+ * in handleStreamEvent.
  */
 
 import type { AgentEventEmitter } from "@a2a-wrapper/core";
@@ -20,6 +25,8 @@ const log = logger.child("event-mapper");
 
 const MAX_OUTPUT_LENGTH = 10_000;
 const MAX_COMMAND_LENGTH = 500;
+const MAX_THINKING_LENGTH = 10_000;
+const MAX_MESSAGE_LENGTH = 2_000;
 
 const SENSITIVE_KEYS = new Set([
   "token", "access_token", "authorization", "api_key", "apikey",
@@ -45,7 +52,7 @@ function redactSecrets(text: string): string {
 
 export function sanitizeMessage(msg: unknown): string {
   if (typeof msg !== "string") return "An error occurred.";
-  return redactSecrets(msg).substring(0, 2000);
+  return redactSecrets(msg).substring(0, MAX_MESSAGE_LENGTH);
 }
 
 function sanitizeData(data: unknown): unknown {
@@ -78,6 +85,34 @@ function truncateOutput(output: unknown): string {
 export class EventMapper {
   private readonly emitter: AgentEventEmitter;
   private readonly config: Required<AgentConfig>;
+  /**
+   * Warn at most once per EventMapper — i.e. once per A2A task, since the executor
+   * constructs one per execute(). Deliberately not process-wide: a misconfigured
+   * deployment should resurface on every affected task rather than going quiet.
+   */
+  private warnedEmptyThinking = false;
+  /**
+   * Stream ids of thinking blocks whose deltas have been seen, queued per SDK
+   * message id. A FIFO — not an index lookup — because the SDK's assistant
+   * content-array position does not match the stream content_block index.
+   *
+   * Entries for a turn abandoned mid-flight (interrupt, cancel, error) are left
+   * to be garbage-collected with the mapper, which the executor constructs per
+   * execute(). Response text strands its artifact the same way — executor.ts
+   * returns on resultError before publishLastChunkMarker — so this is consistent
+   * with existing precedent rather than a new failure mode.
+   */
+  private readonly pendingThinkingStreams = new Map<string, string[]>();
+  /**
+   * Per thinking stream id, the characters already emitted. Doubles as the
+   * lifecycle registry: created at content_block_start, incremented per delta,
+   * deleted when handleThinkingBlock closes the stream. Absence therefore means
+   * either "never opened as a thinking block" or "already closed" — both of
+   * which must ignore any further deltas.
+   */
+  private readonly thinkingStreamLength = new Map<string, number>();
+  /** Message id of the in-flight streamed message, from the last message_start. */
+  private currentStreamMessageId: string | null = null;
 
   constructor(emitter: AgentEventEmitter, config: Required<AgentConfig>) {
     this.emitter = emitter;
@@ -100,7 +135,8 @@ export class EventMapper {
           this.handleResult(msg);
           break;
         case "stream_event":
-          break; // consumed by the executor for artifact deltas
+          this.handleStreamEvent(msg);
+          break;
         default:
           log.debug("Unhandled SDK message type", { type: msg.type });
       }
@@ -135,9 +171,7 @@ export class EventMapper {
       const block = rawBlock as Record<string, unknown>;
 
       if (block.type === "thinking") {
-        if (features.emitThinkingEvents && typeof block.thinking === "string" && block.thinking) {
-          this.emitter.emit("thinking", { content: redactSecrets(block.thinking).substring(0, 2000) });
-        }
+        if (features.emitThinkingEvents) this.handleThinkingBlock(msg, block);
         continue;
       }
 
@@ -208,6 +242,130 @@ export class EventMapper {
         });
       }
     }
+  }
+
+  /**
+   * Publish one complete thinking block.
+   *
+   * An empty `thinking` string means the SDK returned the block with
+   * `display: "omitted"` — the default on current models. That is a config
+   * problem, not a model problem, so say so rather than dropping it silently.
+   */
+  private handleThinkingBlock(msg: SDKMessageLike, block: Record<string, unknown>): void {
+    const raw = typeof block.thinking === "string" ? block.thinking : "";
+
+    // Claim this block's FIFO slot before the empty-block guard. Every thinking
+    // block that opened in the stream must consume its own id, or an empty block
+    // leaves a stale entry for the next block to pop — closing the wrong artifact
+    // and leaving the one that received the deltas open forever.
+    const inner = msg.message as Record<string, unknown> | undefined;
+    const messageId = typeof inner?.id === "string" ? inner.id : null;
+    const streamId = messageId ? this.takePendingThinkingStream(messageId) : null;
+    const used = streamId ? this.thinkingStreamLength.get(streamId) : undefined;
+    if (streamId) this.thinkingStreamLength.delete(streamId);
+
+    if (!raw) {
+      if (!this.warnedEmptyThinking) {
+        this.warnedEmptyThinking = true;
+        log.warn(
+          'Received a thinking block with no content, which means the SDK returned display: "omitted". ' +
+          'If claude.thinking is set below, that setting is the cause — change its display to "summarized". ' +
+          "If it is null, the wrapper already requested summarized thinking and the model or SDK version did not honour it.",
+          { configuredThinking: this.config.claude.thinking ?? null },
+        );
+      }
+      // Close any stream that already emitted deltas; leaving it open strands an
+      // append-mode artifact that never terminates.
+      //
+      // The closing payload is empty because the SDK gave us no text to re-send,
+      // so this is the one case where a consumer following the documented
+      // "read the last part" rule renders nothing despite deltas having arrived.
+      // Buffering the accumulated deltas purely to serve this path is not worth
+      // the memory: it needs the SDK to stream thinking_delta for a block it then
+      // reports as empty, which contradicts the measured behaviour where deltas
+      // sum exactly to the complete block.
+      if (streamId && (used ?? 0) > 0) {
+        this.emitter.emit("thinking", { content: "" }, { id: streamId, lastChunk: true });
+      }
+      return;
+    }
+
+    const content = redactSecrets(raw).substring(0, MAX_THINKING_LENGTH);
+
+    // Mirrors publishLastChunkMarker for response text: the complete block is
+    // re-sent as the closing chunk so a consumer that missed deltas still gets
+    // the whole thought. With no deltas, it is a standalone artifact as before.
+    if (streamId) {
+      this.emitter.emit("thinking", { content }, { id: streamId, lastChunk: true });
+      return;
+    }
+    this.emitter.emit("thinking", { content });
+  }
+
+  /**
+   * Emit incremental thinking from raw stream events.
+   *
+   * Only runs when artifact streaming is on, because `includePartialMessages`
+   * is itself derived from that flag. Each thinking block is registered on a
+   * per-message FIFO at `content_block_start` and consumed by the matching
+   * complete block in `handleAssistant`.
+   */
+  private handleStreamEvent(msg: SDKMessageLike): void {
+    const features = this.config.features;
+    if (!features.emitThinkingEvents) return;
+    if (features.streamArtifactChunks !== true) return;
+    if (msg.parent_tool_use_id != null) return;
+
+    const event = msg.event as Record<string, unknown> | undefined;
+    if (!event) return;
+
+    if (event.type === "message_start") {
+      const message = event.message as Record<string, unknown> | undefined;
+      this.currentStreamMessageId = typeof message?.id === "string" ? message.id : null;
+      return;
+    }
+
+    const messageId = this.currentStreamMessageId;
+    if (!messageId) return;
+    const streamId = `${messageId}-${String(event.index ?? 0)}`;
+
+    if (event.type === "content_block_start") {
+      const block = event.content_block as Record<string, unknown> | undefined;
+      if (block?.type !== "thinking") return;
+      const queue = this.pendingThinkingStreams.get(messageId) ?? [];
+      queue.push(streamId);
+      this.pendingThinkingStreams.set(messageId, queue);
+      this.thinkingStreamLength.set(streamId, 0);
+      return;
+    }
+
+    if (event.type !== "content_block_delta") return;
+    const delta = event.delta as Record<string, unknown> | undefined;
+    if (delta?.type !== "thinking_delta" || typeof delta.thinking !== "string") return;
+
+    // No entry means the stream either never opened as a thinking block or was
+    // already closed by handleThinkingBlock; both must ignore further deltas.
+    const used = this.thinkingStreamLength.get(streamId);
+    if (used === undefined || used >= MAX_THINKING_LENGTH) return;
+
+    // Redaction here is per-chunk and so strictly weaker than whole-text
+    // redaction: a secret split across two deltas ("api_key=" / "sk-…") matches
+    // neither chunk and streams verbatim. The closing marker re-sends the whole
+    // block through redactSecrets and IS fully redacted, so the final artifact
+    // state is clean while intermediate chunks may not be. See spec §6.
+    const text = redactSecrets(delta.thinking).substring(0, MAX_THINKING_LENGTH - used);
+    if (!text) return;
+    this.thinkingStreamLength.set(streamId, used + text.length);
+    this.emitter.emit("thinking", { content: text }, { id: streamId, lastChunk: false });
+  }
+
+  /** Pop the next unmatched streamed thinking block for this message, if any. */
+  private takePendingThinkingStream(messageId: string): string | null {
+    const queue = this.pendingThinkingStreams.get(messageId);
+    if (!queue || queue.length === 0) return null;
+    const streamId = queue.shift() as string;
+    if (queue.length === 0) this.pendingThinkingStreams.delete(messageId);
+    return streamId;
   }
 
   private handleUser(msg: SDKMessageLike): void {

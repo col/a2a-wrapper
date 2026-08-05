@@ -123,8 +123,9 @@ Pluggable transport layer for sideband observability events (MCP tool calls, age
 | `wrapTransport(transport)` | Normalize a function or object into an `EventTransport`. |
 | `EventTransport` | Interface — implement `send(event)` for custom transports. |
 | `EventTransportFn` | Convenience type — a plain `async (event) => void` function. |
-| `AgentEvent` | Structured event with `eventId`, `eventType`, `agentId`, `traceId`, `data`. |
-| `EventType` | Union: `tool_call_start`, `tool_call_end`, `thinking`, `decision`, `agent_started`, `agent_finished`, `agent_error`. |
+| `AgentEvent` | Structured event with `eventId`, `eventType`, `agentId`, `traceId`, `data`, and an optional `stream` marker. |
+| `AgentEventStream` | Optional `stream` marker on an `AgentEvent` — `id` keeps every chunk on one artifact, `lastChunk` closes it. Set it to publish append-mode streamed trace artifacts. The A2A SDK's `ResultManager` appends each chunk's parts rather than substituting them, and the closing chunk's payload should repeat the complete accumulated content — so consumers must read the artifact's last part rather than concatenate every part, or the closing chunk's content is double-counted. |
+| `EventType` | Union: `tool_call_start`, `tool_call_end`, `thinking`, `decision`, `agent_started`, `agent_finished`, `agent_error`, `context_window`. |
 | `TRACE_EXTENSION_URI` | Constant `"urn:x-a2a:trace:v1"` — declared in agent card capabilities and on trace artifacts. |
 | `EventsConfig` | Config interface — `enabled`, `transport` (`"a2a"` or `"http"`), `httpUrl`, `httpTimeout`, `httpHeaders`. |
 

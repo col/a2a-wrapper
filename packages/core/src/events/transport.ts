@@ -56,6 +56,40 @@ export type EventType =
   | "context_window";
 
 /**
+ * Marks an event as one chunk of a larger logical artifact.
+ *
+ * Transports that support append semantics (see {@link A2ATransport}) use `id`
+ * to keep every chunk on one artifact and `lastChunk` to close it. Mirrors the
+ * `publishStreamingChunk` / `publishLastChunkMarker` pair used for response text.
+ *
+ * **Ordering is only guaranteed on order-preserving transports.** There is no
+ * sequence number: chunks are ordered solely by the order `send()` is called.
+ * {@link A2ATransport} preserves it because `send()` reaches `bus.publish()`
+ * with no intervening `await`. {@link HttpTransport} does not — it issues one
+ * `fetch()` per event, so consecutive chunks can arrive out of order, as can
+ * any custom transport that awaits before dispatching. Because the closing
+ * chunk always repeats the complete accumulated content (see `lastChunk`), a
+ * collector that reads only the closing chunk is correct on any transport;
+ * one that renders chunks live needs an order-preserving transport.
+ */
+export interface AgentEventStream {
+  /** Stable identifier shared by every chunk of one logical artifact. */
+  id: string;
+  /**
+   * True on the final chunk, which closes the artifact.
+   *
+   * Per the A2A SDK's `ResultManager`, the closing chunk's parts are
+   * *appended* to the artifact, not substituted — the same behavior that
+   * `publishLastChunkMarker` (see `event-publisher.ts`) relies on for
+   * response text. The closing chunk's payload should therefore repeat the
+   * complete accumulated content (not just the final delta), and consumers
+   * must read the last part rather than concatenate every part — otherwise
+   * the closing chunk's content is double-counted.
+   */
+  lastChunk: boolean;
+}
+
+/**
  * A single agent event carrying structured trace data.
  *
  * Every event is stamped with agent identity, trace context, and a
@@ -79,6 +113,8 @@ export interface AgentEvent {
   timestamp: string;
   /** Event-type-specific structured payload. */
   data: Record<string, unknown>;
+  /** Present when this event is one chunk of a streamed artifact. */
+  stream?: AgentEventStream;
 }
 
 /**
@@ -131,14 +167,20 @@ export class A2ATransport implements EventTransport {
     if (state) data.state = state;
     Object.assign(data, event.data);
 
+    // A streamed event appends to one stable artifact; an unstreamed event is a
+    // self-contained artifact, exactly as before. Normalize `null` to
+    // `undefined` here so `append`, `lastChunk`, and `artifactId` below all
+    // agree on whether this event is streamed — checking `stream` three
+    // times with three different falsiness tests would let them drift.
+    const stream = event.stream ?? undefined;
     const artifactEvent: TaskArtifactUpdateEvent = {
       kind: "artifact-update",
       taskId: this.taskId,
       contextId: this.contextId,
-      append: false,
-      lastChunk: true,
+      append: stream !== undefined,
+      lastChunk: stream ? stream.lastChunk : true,
       artifact: {
-        artifactId: `${traceKey}-${uuidv4()}`,
+        artifactId: stream ? `${traceKey}-${stream.id}` : `${traceKey}-${uuidv4()}`,
         name: traceKey,
         extensions: [TRACE_EXTENSION_URI],
         metadata: {
@@ -379,8 +421,13 @@ export class AgentEventEmitter {
    *
    * @param eventType - The kind of event (e.g. `"tool_call_end"`, `"thinking"`).
    * @param data      - Event-type-specific structured payload.
+   * @param stream    - Set when this event is one chunk of a streamed artifact.
    */
-  async emit(eventType: EventType, data: Record<string, unknown> = {}): Promise<void> {
+  async emit(
+    eventType: EventType,
+    data: Record<string, unknown> = {},
+    stream?: AgentEventStream,
+  ): Promise<void> {
     const event: AgentEvent = {
       eventId: uuidv4(),
       eventType,
@@ -390,6 +437,7 @@ export class AgentEventEmitter {
       parentAgentId: this.parentAgentId,
       timestamp: new Date().toISOString(),
       data,
+      ...(stream ? { stream } : {}),
     };
     try {
       await this.transport.send(event);

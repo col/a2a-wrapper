@@ -69,6 +69,7 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `workingDirectory` | `string` | Absolute path to the workspace Claude operates on. Required at runtime. Supports `${ENV_VAR}`. |
 | `model` | `string` | Model (e.g. `claude-sonnet-5`). Supports `${CLAUDE_MODEL}`. SDK default when omitted. |
 | `fallbackModel` | `string` | Fallback model when the primary is overloaded/unavailable. |
+| `thinking` | `{ type: "adaptive", display?: "summarized" \| "omitted" }` \| `{ type: "enabled", budgetTokens?: integer ≥ 1, display?: "summarized" \| "omitted" }` \| `{ type: "disabled" }` | Thinking/reasoning behaviour, passed through to the SDK. Defaults to `{ "type": "adaptive", "display": "summarized" }` when `features.emitThinkingEvents` is on — without an explicit `display` the SDK returns **empty** thinking blocks on current models and no thinking is published. Set this in a single config layer: it is a discriminated union but layers are deep-merged, so setting it in two layers (e.g. file + env) can produce an invalid hybrid such as `{ type: "disabled", budgetTokens: N }`. |
 | `permissionMode` | `"acceptEdits" \| "dontAsk" \| "plan" \| "bypassPermissions"` | Permission mode. `"default"` and `"auto"` are rejected — see **Permission modes** below. Default: `"acceptEdits"`. |
 | `allowedTools` | `string[]` | Tools auto-allowed without prompting. |
 | `disallowedTools` | `string[]` | Tools removed from the model's context entirely. |
@@ -276,13 +277,15 @@ Sideband events are published through `AgentEventEmitter` for every Claude Agent
 | Event | Emitted when | Notes |
 |---|---|---|
 | `agent_started` | SDK `system`/`init` message | Includes `backend: "claude"` and the resolved model |
-| `thinking` | Assistant `thinking` content block | Controlled by `features.emitThinkingEvents` |
+| `thinking` | Assistant `thinking` content block | Controlled by `features.emitThinkingEvents`; requires `claude.thinking` to request a non-omitted `display` (the default does this). Truncated at 10,000 characters. When `features.streamArtifactChunks` is on, also streams incrementally from `thinking_delta` events: each block becomes one appended `trace.thinking` artifact, closed by a final chunk carrying the complete text. |
 | `tool_call_start` / `tool_call_end` | Assistant `tool_use` block / matching `tool_result` | `toolKind` is `"shell"` (Bash), `"mcp"`, `"a2a_subagent"` (mcp server `a2a-subagents`), or `"builtin"`; controlled by `features.emitToolEvents` |
 | `decision` (`kind: "file_change"`) | `Edit` / `Write` / `NotebookEdit` tool call | Path and change kind only — never file contents; controlled by `features.emitFileChangeEvents` |
 | `decision` (`kind: "todo_list"`) | `TodoWrite` tool call | Controlled by `features.emitTodoEvents` |
 | `decision` (`kind: "permission_denied"`) | SDK `system`/`permission_denied` message | Tool name + sanitized message |
 | `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns` |
 | `agent_error` | SDK `result` failure subtypes / `error` message | Sanitized error message; reason mapped from the SDK's failure subtype (e.g. max turns, max budget) |
+
+> **Note on streamed thinking.** Secret redaction is applied per emitted chunk. With `features.streamArtifactChunks` on, a secret split across two `thinking_delta` events is not matched by the redaction patterns, so a consumer rendering deltas live may briefly show an unredacted fragment. The closing chunk carries the complete block and is redacted as a whole — so the streamed deltas and the closing chunk can differ in both content and length wherever redaction fires. The A2A SDK's `ResultManager` appends every chunk's parts rather than substituting them, so a consumer that concatenates all parts of a streamed `trace.thinking` artifact sees the thinking text twice — once as deltas, once again in the closing chunk. Read only the **last** part of the artifact; do not concatenate.
 
 ## Docker
 
