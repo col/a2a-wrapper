@@ -1,6 +1,6 @@
 {
-  "name": "@a2a-wrapper/core",
-  "version": "1.7.0",
+  "name": "@col/a2a-wrapper-core",
+  "version": "1.8.0-beta.1",
   "description": "Shared infrastructure core for A2A protocol wrapper projects. Provides logging, configuration loading, event publishing, agent card building, server bootstrapping, session management, and CLI scaffolding.",
   "type": "module",
   "exports": {
@@ -42,16 +42,17 @@
     "node": ">=18.0.0"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/shashikanth-gs/a2a-wrapper.git",
+    "url": "git+https://github.com/col/a2a-wrapper.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/shashikanth-gs/a2a-wrapper/tree/main/packages/core#readme",
+  "homepage": "https://github.com/col/a2a-wrapper/tree/main/packages/core#readme",
   "bugs": {
-    "url": "https://github.com/shashikanth-gs/a2a-wrapper/issues"
+    "url": "https://github.com/col/a2a-wrapper/issues"
   },
   "license": "MIT"
 }
