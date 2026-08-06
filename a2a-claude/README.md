@@ -106,12 +106,30 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | Value | Behavior |
 |---|---|
 | `{ "type": "adaptive" }` | Claude decides when and how much to think. Newer models only. |
-| `{ "type": "enabled", "budgetTokens": 4096 }` | Fixed thinking token budget. `budgetTokens` is optional; `display` may be `"summarized"` or `"omitted"`. |
+| `{ "type": "enabled", "budgetTokens": 4096 }` | Fixed thinking token budget. `budgetTokens` is optional. |
 | `{ "type": "disabled" }` | No extended thinking. |
+
+`adaptive` and `enabled` also accept `display`, either `"summarized"` or `"omitted"`.
 
 **`effort`** guides thinking depth, trading latency and token spend against answer quality. Models that do not support the requested level silently downgrade it, and `"max"` is available on select models only — so a level accepted at startup is not a guarantee that the model honors it.
 
-Two things worth knowing:
+#### Thinking summaries are requested automatically
+
+The SDK leaves `display` at `"omitted"`, which makes the model emit thinking blocks whose text is an **empty string**. Nothing reaches the sideband, and `features.emitThinkingEvents` looks broken even though it is on.
+
+So whenever `emitThinkingEvents` is enabled — the default — the wrapper asks for summaries:
+
+| Your `claude.thinking` | Sent to the SDK |
+|---|---|
+| unset | `{ "type": "adaptive", "display": "summarized" }` |
+| `{ "type": "adaptive" }` | `{ "type": "adaptive", "display": "summarized" }` |
+| `{ "type": "enabled", "budgetTokens": 8000 }` | `{ "type": "enabled", "budgetTokens": 8000, "display": "summarized" }` |
+| `{ "type": "adaptive", "display": "omitted" }` | unchanged — an explicit `display` always wins |
+| `{ "type": "disabled" }` | unchanged |
+
+Note the first row: with thinking events on and no `thinking` block of your own, the wrapper turns adaptive thinking **on**, which costs thinking tokens. Set `"thinking": { "type": "disabled" }` or `"emitThinkingEvents": false` to opt out.
+
+Two more things worth knowing:
 
 - `{ "type": "disabled" }` means no `thinking` sideband events can ever fire, regardless of `features.emitThinkingEvents`.
 - Both values are validated at startup. An unsupported effort level or a malformed `thinking` object fails `initialize()` with a message naming the allowed values.
