@@ -68,7 +68,7 @@ export type ClaudeEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
  * - "disabled" — no extended thinking
  */
 export type ClaudeThinkingConfig =
-  | { type: "adaptive" }
+  | { type: "adaptive"; display?: "summarized" | "omitted" }
   | { type: "enabled"; budgetTokens?: number; display?: "summarized" | "omitted" }
   | { type: "disabled" };
 

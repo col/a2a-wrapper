@@ -101,7 +101,10 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": ["type"],
-                  "properties": { "type": { "const": "adaptive" } }
+                  "properties": {
+                    "type": { "const": "adaptive" },
+                    "display": { "enum": ["summarized", "omitted"] }
+                  }
                 },
                 {
                   "type": "object",

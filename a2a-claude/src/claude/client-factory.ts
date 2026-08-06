@@ -8,7 +8,7 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentConfig } from "../config/types.js";
+import type { AgentConfig, ClaudeThinkingConfig } from "../config/types.js";
 import { buildMcpServers } from "./mcp-adapter.js";
 
 // ─── Narrow Interfaces (for testability) ────────────────────────────────────
@@ -58,6 +58,28 @@ export interface ClaudeClientLike {
  * Hardening flags (strictMcpConfig, persistSession) are always set here and
  * are not user-configurable.
  */
+/**
+ * Resolve the `thinking` option actually sent to the SDK.
+ *
+ * The SDK leaves `display` at "omitted", which makes the model emit thinking
+ * blocks whose text is an empty string — so `features.emitThinkingEvents` has
+ * nothing to publish and the sideband stays silent. Whenever those events are
+ * enabled, ask for summaries: supply a full adaptive config when the caller set
+ * no thinking at all, and fill in `display` when they set one without it.
+ *
+ * An explicit `display` is always honoured, including "omitted", and
+ * `type: "disabled"` is left untouched — both are deliberate opt-outs.
+ */
+function resolveThinking(
+  thinking: ClaudeThinkingConfig | undefined,
+  emitThinkingEvents: boolean | undefined,
+): ClaudeThinkingConfig | undefined {
+  if (!emitThinkingEvents) return thinking;
+  if (!thinking) return { type: "adaptive", display: "summarized" };
+  if (thinking.type === "disabled" || thinking.display !== undefined) return thinking;
+  return { ...thinking, display: "summarized" };
+}
+
 export function buildQueryOptions(
   config: Required<AgentConfig>,
   turn: { resume?: string; abortController?: AbortController },
@@ -78,7 +100,7 @@ export function buildQueryOptions(
     model: claude.model || undefined,
     fallbackModel: claude.fallbackModel || undefined,
     effort: claude.effort,
-    thinking: claude.thinking,
+    thinking: resolveThinking(claude.thinking, config.features.emitThinkingEvents),
     permissionMode: claude.permissionMode ?? "acceptEdits",
     allowedTools: claude.allowedTools && claude.allowedTools.length > 0 ? claude.allowedTools : undefined,
     disallowedTools: claude.disallowedTools && claude.disallowedTools.length > 0 ? claude.disallowedTools : undefined,
