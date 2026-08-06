@@ -94,6 +94,33 @@
             "workingDirectory": { "type": "string" },
             "model": { "type": "string" },
             "fallbackModel": { "type": "string" },
+            "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+            "thinking": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type"],
+                  "properties": { "type": { "const": "adaptive" } }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "const": "enabled" },
+                    "budgetTokens": { "type": "integer", "minimum": 1 },
+                    "display": { "enum": ["summarized", "omitted"] }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type"],
+                  "properties": { "type": { "const": "disabled" } }
+                }
+              ]
+            },
             "permissionMode": { "enum": ["acceptEdits", "dontAsk", "plan", "bypassPermissions"] },
             "allowedTools": { "type": "array", "items": { "type": "string" } },
             "disallowedTools": { "type": "array", "items": { "type": "string" } },

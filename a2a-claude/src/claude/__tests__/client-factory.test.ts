@@ -107,4 +107,19 @@ describe("buildQueryOptions", () => {
     expect(opts.allowDangerouslySkipPermissions).toBe(true);
     expect(opts.mcpServers).toEqual({ srv: { type: "stdio", command: "x" } });
   });
+
+  it("passes effort and thinking through to the SDK options", () => {
+    const opts = buildQueryOptions(
+      cfg({ effort: "high", thinking: { type: "enabled", budgetTokens: 4096 } }),
+      {},
+    );
+    expect(opts.effort).toBe("high");
+    expect(opts.thinking).toEqual({ type: "enabled", budgetTokens: 4096 });
+  });
+
+  it("omits effort and thinking when unset", () => {
+    const opts = buildQueryOptions(cfg(), {});
+    expect(opts.effort).toBeUndefined();
+    expect(opts.thinking).toBeUndefined();
+  });
 });

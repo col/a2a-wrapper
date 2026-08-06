@@ -26,6 +26,8 @@ export interface QueryOptionsLike {
   cwd?: string;
   model?: string;
   fallbackModel?: string;
+  effort?: string;
+  thinking?: { type: string; budgetTokens?: number; display?: string };
   permissionMode?: string;
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -99,6 +101,8 @@ export function buildQueryOptions(
     cwd: claude.workingDirectory || undefined,
     model: claude.model || undefined,
     fallbackModel: claude.fallbackModel || undefined,
+    effort: claude.effort,
+    thinking: claude.thinking,
     permissionMode: claude.permissionMode ?? "acceptEdits",
     allowedTools: claude.allowedTools && claude.allowedTools.length > 0 ? claude.allowedTools : undefined,
     disallowedTools: claude.disallowedTools && claude.disallowedTools.length > 0 ? claude.disallowedTools : undefined,
