@@ -42,6 +42,8 @@ import { logger } from "../utils/logger.js";
 const log = logger.child("executor");
 
 const VALID_PERMISSION_MODES = new Set(["acceptEdits", "dontAsk", "plan", "bypassPermissions"]);
+const VALID_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const VALID_THINKING_TYPES = new Set(["adaptive", "enabled", "disabled"]);
 
 export class ClaudeExecutor implements AgentExecutor {
   private readonly config: Required<AgentConfig>;
@@ -475,6 +477,40 @@ export class ClaudeExecutor implements AgentExecutor {
       throw new Error(
         "customSystemPrompt and systemPromptAppend are mutually exclusive. Set only one.",
       );
+    }
+
+    if (claude.effort !== undefined && !VALID_EFFORT_LEVELS.has(claude.effort)) {
+      throw new Error(
+        `claude.effort "${String(claude.effort)}" is invalid. ` +
+        "Use one of: low, medium, high, xhigh, max.",
+      );
+    }
+
+    // Config can arrive from an untyped JSON file or CLAUDE_EFFORT, so the shape
+    // is checked structurally rather than trusted from the type declaration.
+    const thinking = claude.thinking as { type?: unknown; budgetTokens?: unknown } | undefined;
+    if (thinking !== undefined) {
+      if (
+        typeof thinking !== "object" ||
+        thinking === null ||
+        Array.isArray(thinking) ||
+        typeof thinking.type !== "string" ||
+        !VALID_THINKING_TYPES.has(thinking.type)
+      ) {
+        throw new Error(
+          'claude.thinking must be an object whose "type" is one of: adaptive, enabled, disabled.',
+        );
+      }
+      if (
+        thinking.budgetTokens !== undefined &&
+        (typeof thinking.budgetTokens !== "number" ||
+          !Number.isInteger(thinking.budgetTokens) ||
+          thinking.budgetTokens <= 0)
+      ) {
+        throw new Error(
+          `claude.thinking.budgetTokens must be a positive integer (got ${JSON.stringify(thinking.budgetTokens)}).`,
+        );
+      }
     }
 
     if (claude.settingSources && claude.settingSources.length > 0) {

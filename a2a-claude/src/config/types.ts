@@ -72,6 +72,21 @@ export interface ClaudeMarketplaceConfig {
   [key: string]: unknown;
 }
 
+/** Reasoning effort level. Maps to SDK `Options.effort`. */
+export type ClaudeEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Extended thinking behavior. Maps to SDK `Options.thinking`.
+ *
+ * - "adaptive" — Claude decides when and how much to think (newer models)
+ * - "enabled"  — fixed thinking token budget (older models)
+ * - "disabled" — no extended thinking
+ */
+export type ClaudeThinkingConfig =
+  | { type: "adaptive"; display?: "summarized" | "omitted" }
+  | { type: "enabled"; budgetTokens?: number; display?: "summarized" | "omitted" }
+  | { type: "disabled" };
+
 /**
  * Claude Agent SDK connection and execution settings.
  * Fields map 1:1 onto @anthropic-ai/claude-agent-sdk Options (see spec §3.1).
@@ -83,6 +98,14 @@ export interface ClaudeConfig {
   model?: string;
   /** Fallback model when the primary is overloaded/unavailable. */
   fallbackModel?: string;
+  /**
+   * Reasoning effort level. Overridable via the CLAUDE_EFFORT environment
+   * variable. SDK default when omitted. Silently downgraded by the SDK on
+   * models that do not support the requested level.
+   */
+  effort?: ClaudeEffortLevel;
+  /** Extended thinking behavior. SDK default when omitted. */
+  thinking?: ClaudeThinkingConfig;
   /**
    * Permission mode. "default" and "auto" are rejected — they require an
    * interactive approver / classifier, incompatible with headless A2A.
