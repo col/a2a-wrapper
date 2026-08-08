@@ -69,6 +69,8 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `workingDirectory` | `string` | Absolute path to the workspace Claude operates on. Required at runtime. Supports `${ENV_VAR}`. |
 | `model` | `string` | Model (e.g. `claude-sonnet-5`). Supports `${CLAUDE_MODEL}`. SDK default when omitted. |
 | `fallbackModel` | `string` | Fallback model when the primary is overloaded/unavailable. |
+| `effort` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | Reasoning effort level. Overridable with the `CLAUDE_EFFORT` env var. SDK default when omitted. |
+| `thinking` | `{ type: "adaptive" }` \| `{ type: "enabled", budgetTokens?, display? }` \| `{ type: "disabled" }` | Extended thinking behavior. SDK default when omitted. |
 | `permissionMode` | `"acceptEdits" \| "dontAsk" \| "plan" \| "bypassPermissions"` | Permission mode. `"default"` and `"auto"` are rejected — see **Permission modes** below. Default: `"acceptEdits"`. |
 | `allowedTools` | `string[]` | Tools auto-allowed without prompting. |
 | `disallowedTools` | `string[]` | Tools removed from the model's context entirely. |
@@ -83,6 +85,52 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `dangerouslyAllowBypassPermissions` | `boolean` | Must be `true` when `permissionMode` is `"bypassPermissions"`. |
 | `contextFile` | `string` | Filename for the pre-built domain context file within `workingDirectory`. Default `"context.md"`. |
 | `contextPrompt` | `string` | Default prompt used when `buildContext()` is called without an explicit prompt. |
+
+### Reasoning effort and extended thinking
+
+`effort` and `thinking` are independent knobs that both affect how much the model reasons before answering.
+
+```json
+{
+  "claude": {
+    "effort": "high",
+    "thinking": { "type": "adaptive" }
+  }
+}
+```
+
+**`thinking`** selects the mode:
+
+| Value | Behavior |
+|---|---|
+| `{ "type": "adaptive" }` | Claude decides when and how much to think. Newer models only. |
+| `{ "type": "enabled", "budgetTokens": 4096 }` | Fixed thinking token budget. `budgetTokens` is optional. |
+| `{ "type": "disabled" }` | No extended thinking. |
+
+`adaptive` and `enabled` also accept `display`, either `"summarized"` or `"omitted"`.
+
+**`effort`** guides thinking depth, trading latency and token spend against answer quality. Models that do not support the requested level silently downgrade it, and `"max"` is available on select models only — so a level accepted at startup is not a guarantee that the model honors it.
+
+#### Thinking summaries are requested automatically
+
+The SDK leaves `display` at `"omitted"`, which makes the model emit thinking blocks whose text is an **empty string**. Nothing reaches the sideband, and `features.emitThinkingEvents` looks broken even though it is on.
+
+So whenever `emitThinkingEvents` is enabled — the default — the wrapper asks for summaries:
+
+| Your `claude.thinking` | Sent to the SDK |
+|---|---|
+| unset | `{ "type": "adaptive", "display": "summarized" }` |
+| `{ "type": "adaptive" }` | `{ "type": "adaptive", "display": "summarized" }` |
+| `{ "type": "enabled", "budgetTokens": 8000 }` | `{ "type": "enabled", "budgetTokens": 8000, "display": "summarized" }` |
+| `{ "type": "adaptive", "display": "omitted" }` | unchanged — an explicit `display` always wins |
+| `{ "type": "disabled" }` | unchanged |
+
+Note the first row: with thinking events on and no `thinking` block of your own, the wrapper turns adaptive thinking **on**, which costs thinking tokens. Set `"thinking": { "type": "disabled" }` or `"emitThinkingEvents": false` to opt out.
+
+Two more things worth knowing:
+
+- `{ "type": "disabled" }` means no `thinking` sideband events can ever fire, regardless of `features.emitThinkingEvents`.
+- Both values are validated at startup. An unsupported effort level or a malformed `thinking` object fails `initialize()` with a message naming the allowed values.
 
 ### Full config reference
 
@@ -116,6 +164,8 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
   "claude": {
     "workingDirectory": "${WORKSPACE_DIR}",
     "model": "${CLAUDE_MODEL}",
+    "effort": "high",
+    "thinking": { "type": "adaptive" },
     "permissionMode": "acceptEdits",
     "settingSources": [],
     "additionalDirectories": [],

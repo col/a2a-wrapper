@@ -91,6 +91,17 @@ describe("resolveConfig", () => {
     expect((cfg.mcp.b as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer sekret");
   });
 
+  it("applies CLAUDE_EFFORT as an env override", () => {
+    delete process.env.WORKSPACE_DIR;
+    process.env.CLAUDE_EFFORT = "xhigh";
+    expect(resolveConfig().claude.effort).toBe("xhigh");
+  });
+
+  it("leaves effort undefined when CLAUDE_EFFORT is unset", () => {
+    delete process.env.CLAUDE_EFFORT;
+    expect(resolveConfig().claude.effort).toBeUndefined();
+  });
+
   it("throws a descriptive error for a missing config file", () => {
     expect(() => resolveConfig(join(dir, "missing.json"))).toThrow(/Failed to load config file/);
   });

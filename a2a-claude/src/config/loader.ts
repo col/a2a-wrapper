@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { substituteEnvTokensInString, substituteEnvTokensInRecord } from "@a2a-wrapper/core";
 import { DEFAULTS } from "./defaults.js";
-import type { AgentConfig, McpServerConfig } from "./types.js";
+import type { AgentConfig, ClaudeEffortLevel, McpServerConfig } from "./types.js";
 
 // ─── Deep Merge ─────────────────────────────────────────────────────────────
 
@@ -77,10 +77,14 @@ export function loadEnvOverrides(): Partial<AgentConfig> {
   // Claude
   const workspaceDir = process.env["WORKSPACE_DIR"];
   const claudeModel = process.env["CLAUDE_MODEL"];
-  if (workspaceDir || claudeModel) {
+  const claudeEffort = process.env["CLAUDE_EFFORT"];
+  if (workspaceDir || claudeModel || claudeEffort) {
     cfg.claude = {};
     if (workspaceDir) cfg.claude.workingDirectory = workspaceDir;
     if (claudeModel) cfg.claude.model = claudeModel;
+    // Checked against the allowed levels in ClaudeExecutor.validateConfig(),
+    // which runs after the full merge.
+    if (claudeEffort) cfg.claude.effort = claudeEffort as ClaudeEffortLevel;
   }
   // ANTHROPIC_API_KEY is read directly by the SDK — never forwarded via config.
 

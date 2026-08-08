@@ -66,4 +66,59 @@ describe("buildQueryOptions", () => {
     expect(opts.allowDangerouslySkipPermissions).toBe(true);
     expect(opts.mcpServers).toEqual({ srv: { type: "stdio", command: "x" } });
   });
+
+  it("passes effort and thinking through to the SDK options", () => {
+    const opts = buildQueryOptions(
+      cfg({ effort: "high", thinking: { type: "enabled", budgetTokens: 4096 } }),
+      {},
+    );
+    expect(opts.effort).toBe("high");
+    // display is filled in because emitThinkingEvents defaults on — see the
+    // "thinking display defaulting" block below.
+    expect(opts.thinking).toEqual({ type: "enabled", budgetTokens: 4096, display: "summarized" });
+  });
+
+  it("omits effort when unset", () => {
+    const opts = buildQueryOptions(cfg(), {});
+    expect(opts.effort).toBeUndefined();
+  });
+
+  // The SDK leaves `display` at "omitted", which yields thinking blocks with an
+  // empty string — nothing for the sideband thinking events to carry.
+  describe("thinking display defaulting", () => {
+    it("requests adaptive summaries when thinking is unset and thinking events are on", () => {
+      const opts = buildQueryOptions(cfg(), {});
+      expect(opts.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    });
+
+    it("fills in display on an explicit adaptive config", () => {
+      const opts = buildQueryOptions(cfg({ thinking: { type: "adaptive" } }), {});
+      expect(opts.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    });
+
+    it("fills in display on an explicit enabled config, preserving budgetTokens", () => {
+      const opts = buildQueryOptions(cfg({ thinking: { type: "enabled", budgetTokens: 8000 } }), {});
+      expect(opts.thinking).toEqual({ type: "enabled", budgetTokens: 8000, display: "summarized" });
+    });
+
+    it("respects an explicit display, including omitted", () => {
+      const opts = buildQueryOptions(cfg({ thinking: { type: "adaptive", display: "omitted" } }), {});
+      expect(opts.thinking).toEqual({ type: "adaptive", display: "omitted" });
+    });
+
+    it("leaves a disabled config alone", () => {
+      const opts = buildQueryOptions(cfg({ thinking: { type: "disabled" } }), {});
+      expect(opts.thinking).toEqual({ type: "disabled" });
+    });
+
+    it("changes nothing when emitThinkingEvents is off", () => {
+      const c = cfg({ thinking: { type: "adaptive" } });
+      c.features = { ...c.features, emitThinkingEvents: false };
+      expect(buildQueryOptions(c, {}).thinking).toEqual({ type: "adaptive" });
+
+      const bare = cfg();
+      bare.features = { ...bare.features, emitThinkingEvents: false };
+      expect(buildQueryOptions(bare, {}).thinking).toBeUndefined();
+    });
+  });
 });
