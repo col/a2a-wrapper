@@ -77,6 +77,8 @@ Fields map 1:1 onto `@anthropic-ai/claude-agent-sdk` `Options` (source of truth:
 | `systemPromptAppend` | `string` | Appended to the `claude_code` preset system prompt. |
 | `customSystemPrompt` | `string` | Full system prompt replacement. Mutually exclusive with `systemPromptAppend`. |
 | `settingSources` | `Array<"user" \| "project" \| "local">` | Filesystem settings sources to load. Default `[]` = full isolation from host `~/.claude` and project settings. Include `"project"` to load workspace `CLAUDE.md`. |
+| `marketplaces` | `Record<string, { source: { source: string, ... } }>` | Plugin marketplaces to register, keyed by marketplace id. The SDK fetches and installs the plugins itself — see **Marketplace plugins** below. Every string field in `source` supports `${ENV_VAR}` substitution. |
+| `enabledPlugins` | `Record<string, boolean>` | Plugins to enable, keyed `"<plugin-id>@<marketplace-id>"`. The marketplace id must appear in `marketplaces`. Startup fails if an enabled plugin does not load. |
 | `maxTurns` | `number` | Max conversation turns per query (runaway protection). |
 | `maxBudgetUsd` | `number` | Max budget in USD per query. |
 | `additionalDirectories` | `string[]` | Additional directories Claude can access. Supports `${ENV_VAR}` per entry. |
@@ -216,6 +218,43 @@ Setting `permissionMode: "bypassPermissions"` without `dangerouslyAllowBypassPer
 `settingSources` defaults to `[]`, meaning Claude Code loads **no** host `~/.claude` user settings and **no** project `CLAUDE.md` / `.claude/settings.json` — every session starts from a clean, isolated slate driven entirely by `config.json`. Add `"project"` to `settingSources` to let Claude read the workspace's `CLAUDE.md` and project-level settings (useful when the target repository already documents its own conventions). Add `"user"` to load the host user's `~/.claude` settings — only do this in trusted, single-tenant deployments, since it pulls in configuration outside the agent's config file.
 
 `strictMcpConfig` is always enabled internally (not user-configurable) — Claude is only allowed to use MCP servers explicitly declared in `config.json`, never ones discovered from ambient settings.
+
+### Marketplace plugins
+
+`marketplaces` + `enabledPlugins` let the SDK fetch and install plugins itself, so nothing has to be baked into the image:
+
+```json
+"claude": {
+  "marketplaces": {
+    "superpowers-marketplace": {
+      "source": { "source": "github", "repo": "obra/superpowers-marketplace", "ref": "v6.1.1" }
+    }
+  },
+  "enabledPlugins": { "superpowers@superpowers-marketplace": true }
+}
+```
+
+`source` is passed through to the SDK unchanged, so every source kind it supports works — `github` (`repo`), `git` (`url`), `git-subdir` (`url` + `path`, for monorepos), `url` (direct `marketplace.json`), `npm` (`package`), and local `directory`. Each accepts `ref` or `sha`.
+
+**Pin every marketplace by `ref` or `sha`.** Plugin hooks and bundled MCP servers execute as code at the session's permission mode, so an unpinned marketplace means two sessions of the same agent can run different code.
+
+These map to the SDK's *flag-tier* `settings`, which composes with `settingSources` rather than competing with it — marketplace plugins load even under the default `settingSources: []` isolation, and combining them with `["project"]` for `CLAUDE.md` works as expected.
+
+Private marketplaces are cloned by `git`, so credentials must be supplied through the process environment (e.g. `GIT_ASKPASS`, or a configured credential helper) rather than per-source config.
+
+#### Startup preflight
+
+The SDK installs marketplace plugins **asynchronously by default** — with `CLAUDE_CODE_SYNC_PLUGIN_INSTALL` unset it installs nothing, reports no error, and loads zero plugins on every subsequent run too. The wrapper therefore sets that flag for sessions with marketplaces configured, and `initialize()` runs a preflight that verifies each enabled plugin actually loaded:
+
+```
+Configured plugin(s) did not load: superpowers@superpowers-marketplace. Check that each
+marketplace source and ref/sha is correct and that the plugin name exists in that
+marketplace's manifest.
+```
+
+The check diffs the session init message's plugin list, **not** the `plugin_install` events — those report per-marketplace status, so a marketplace that clones cleanly but contains no plugin by the configured name still reports `installed` and `completed`. The probe costs no tokens (the init message precedes any model call) and warms the plugin cache so the first task doesn't pay the clone.
+
+The preflight has no timeout of its own: the SDK already bounds marketplace fetches (an unreachable host fails in ~75s), and the session still reaches init afterwards, so a fetch failure surfaces as the precise "did not load" error above rather than a generic timeout. Tune `CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS` or `CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS` if you need different bounds.
 
 ## Example Agents
 

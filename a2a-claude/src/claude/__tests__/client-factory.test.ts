@@ -33,6 +33,47 @@ describe("buildQueryOptions", () => {
     expect(opts.systemPrompt).toBeUndefined();
     expect(opts.resume).toBeUndefined();
     expect(opts.sandbox).toBeUndefined();
+    // No marketplaces configured → no settings tier, no env override, so
+    // existing consumers see byte-identical options.
+    expect(opts.settings).toBeUndefined();
+    expect(opts.env).toBeUndefined();
+  });
+
+  it("emits marketplaces as flag-tier settings alongside settingSources", () => {
+    const marketplaces = {
+      "superpowers-marketplace": {
+        source: { source: "github", repo: "obra/superpowers-marketplace", ref: "v6.1.1" },
+      },
+    };
+    const opts = buildQueryOptions(
+      cfg({
+        marketplaces,
+        enabledPlugins: { "superpowers@superpowers-marketplace": true },
+        settingSources: ["project"],
+      }),
+      {},
+    );
+    expect(opts.settings).toEqual({
+      extraKnownMarketplaces: marketplaces,
+      enabledPlugins: { "superpowers@superpowers-marketplace": true },
+    });
+    // settings is the flag tier, so it composes with settingSources rather
+    // than replacing it — CLAUDE.md loading survives.
+    expect(opts.settingSources).toEqual(["project"]);
+  });
+
+  it("forces synchronous plugin install without dropping the ambient env", () => {
+    process.env.A2A_CLIENT_FACTORY_PROBE = "kept";
+    try {
+      const opts = buildQueryOptions(
+        cfg({ marketplaces: { mk: { source: { source: "github", repo: "o/r" } } } }),
+        {},
+      );
+      expect(opts.env?.["CLAUDE_CODE_SYNC_PLUGIN_INSTALL"]).toBe("1");
+      expect(opts.env?.["A2A_CLIENT_FACTORY_PROBE"]).toBe("kept");
+    } finally {
+      delete process.env.A2A_CLIENT_FACTORY_PROBE;
+    }
   });
 
   it("threads resume and abortController from the turn", () => {

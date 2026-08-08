@@ -119,6 +119,8 @@ export class ClaudeExecutor implements AgentExecutor {
       mcpServers: Object.keys(this.config.mcp || {}),
     });
 
+    await this.preflightPlugins();
+
     this.sessionManager = new SessionManager(this.config);
     this.sessionManager.startCleanup(
       this.config.session.cleanupInterval ?? 300_000,
@@ -127,6 +129,85 @@ export class ClaudeExecutor implements AgentExecutor {
 
     this.initialized = true;
     log.info("Executor initialized");
+  }
+
+  /**
+   * Verify every enabled marketplace plugin actually loaded, before the server
+   * accepts traffic.
+   *
+   * This has to diff the init message's `plugins` array, because nothing else
+   * reports the failure: `plugin_install` events describe the *marketplace*, so
+   * a marketplace that clones fine but contains no plugin by the configured
+   * name still emits "installed" then "completed" — and the session comes up
+   * with an empty plugin list and no error anywhere.
+   *
+   * The probe is free: `init` is emitted before any model call (it arrives even
+   * with an invalid API key), so this spends no tokens. It also warms the
+   * plugin cache, so the first real task doesn't pay the marketplace clone.
+   */
+  private async preflightPlugins(): Promise<void> {
+    const expected = Object.entries(this.config.claude.enabledPlugins ?? {})
+      .filter(([, enabled]) => enabled === true)
+      .map(([key]) => key);
+    if (expected.length === 0) return;
+
+    const abortController = new AbortController();
+    const loadedSources = new Set<string>();
+    const loadedNames = new Set<string>();
+    let sawInit = false;
+
+    log.info("Verifying marketplace plugins", { plugins: expected });
+
+    try {
+      const q = this.client!.runQuery("", buildQueryOptions(this.config, { abortController }));
+      for await (const msg of q as AsyncIterable<SDKMessageLike>) {
+        if (msg.type === "system" && msg.subtype === "plugin_install" && msg.status === "failed") {
+          log.warn("Marketplace install reported a failure", {
+            marketplace: msg.name,
+            error: msg.error,
+          });
+        }
+        if (msg.type === "system" && msg.subtype === "init") {
+          sawInit = true;
+          const loaded = (msg.plugins as Array<Record<string, unknown>> | undefined) ?? [];
+          for (const plugin of loaded) {
+            if (typeof plugin.source === "string") loadedSources.add(plugin.source);
+            if (typeof plugin.name === "string") loadedNames.add(plugin.name);
+          }
+          break;
+        }
+      }
+    } catch (err) {
+      throw new Error(
+        `Plugin preflight failed before the session started: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      // Tear down the probe subprocess; we never need its turn.
+      abortController.abort();
+    }
+
+    if (!sawInit) {
+      throw new Error(
+        "Plugin preflight ended without a session init message; plugins could not be verified.",
+      );
+    }
+
+    // `source` is the exact "<plugin>@<marketplace>" key; fall back to the bare
+    // plugin name for SDK builds that omit it from the init message.
+    const missing = expected.filter((key) => {
+      const pluginName = key.slice(0, key.lastIndexOf("@"));
+      return !loadedSources.has(key) && !loadedNames.has(pluginName);
+    });
+
+    if (missing.length > 0) {
+      throw new Error(
+        `Configured plugin(s) did not load: ${missing.join(", ")}. ` +
+        `Check that each marketplace source and ref/sha is correct and that the plugin name ` +
+        `exists in that marketplace's manifest.`,
+      );
+    }
+
+    log.info("Marketplace plugins verified", { plugins: expected });
   }
 
   async shutdown(): Promise<void> {

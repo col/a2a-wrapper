@@ -134,7 +134,56 @@ export function resolveConfig(
   substituteEnvTokensInClaude(merged);
   substituteEnvTokensInMcp(merged);
 
+  const claude = (merged as Record<string, unknown>).claude as Record<string, unknown> | undefined;
+  if (claude) validateMarketplaceShape(claude);
+
   return merged as unknown as Required<AgentConfig>;
+}
+
+// Catches a mistyped marketplace id or plugin key at config load, where the
+// error names the offending field — rather than at startup, where the only
+// symptom is a plugin that silently failed to install.
+function validateMarketplaceShape(claude: Record<string, unknown>): void {
+  const marketplaces = claude.marketplaces as Record<string, Record<string, unknown>> | undefined;
+  if (marketplaces !== undefined) {
+    if (typeof marketplaces !== "object" || Array.isArray(marketplaces)) {
+      throw new Error('claude.marketplaces must be an object keyed by marketplace id.');
+    }
+    for (const [id, entry] of Object.entries(marketplaces)) {
+      const source = entry?.source as Record<string, unknown> | undefined;
+      if (!source || typeof source !== "object" || Array.isArray(source)) {
+        throw new Error(`claude.marketplaces.${id} requires a "source" object.`);
+      }
+      if (typeof source.source !== "string" || source.source.length === 0) {
+        throw new Error(
+          `claude.marketplaces.${id}.source requires a non-empty "source" kind (e.g. "github", "git", "url", "npm").`,
+        );
+      }
+    }
+  }
+
+  const enabled = claude.enabledPlugins as Record<string, unknown> | undefined;
+  if (enabled === undefined) return;
+  if (typeof enabled !== "object" || Array.isArray(enabled)) {
+    throw new Error('claude.enabledPlugins must be an object keyed by "<plugin-id>@<marketplace-id>".');
+  }
+  for (const [key, value] of Object.entries(enabled)) {
+    if (typeof value !== "boolean") {
+      throw new Error(`claude.enabledPlugins["${key}"] must be a boolean.`);
+    }
+    const at = key.lastIndexOf("@");
+    if (at <= 0 || at === key.length - 1) {
+      throw new Error(
+        `claude.enabledPlugins key "${key}" must be of the form "<plugin-id>@<marketplace-id>".`,
+      );
+    }
+    const marketplaceId = key.slice(at + 1);
+    if (!marketplaces || !(marketplaceId in marketplaces)) {
+      throw new Error(
+        `claude.enabledPlugins["${key}"] references marketplace "${marketplaceId}", which is not declared in claude.marketplaces.`,
+      );
+    }
+  }
 }
 
 // ─── Env Token Substitution ─────────────────────────────────────────────────
@@ -150,6 +199,23 @@ function substituteEnvTokensInClaude(config: Record<string, unknown>): void {
     const resolved = substituteEnvTokensInString(claude.model);
     // Clear the field if the token wasn't resolved (env var not set) or if empty.
     claude.model = resolved.includes("${") ? undefined : resolved || undefined;
+  }
+  // Marketplace sources carry refs, URLs and (for private repos) credentials —
+  // substitute every string field rather than an allowlist, since the SDK's
+  // source shapes vary by kind and gain new fields over time.
+  const marketplaces = claude.marketplaces as Record<string, Record<string, unknown>> | undefined;
+  if (marketplaces) {
+    for (const entry of Object.values(marketplaces)) {
+      const source = entry?.source as Record<string, unknown> | undefined;
+      if (source && typeof source === "object") {
+        for (const [key, value] of Object.entries(source)) {
+          if (typeof value === "string") source[key] = substituteEnvTokensInString(value);
+        }
+      }
+      if (typeof entry?.installLocation === "string") {
+        entry.installLocation = substituteEnvTokensInString(entry.installLocation);
+      }
+    }
   }
   if (Array.isArray(claude.additionalDirectories)) {
     claude.additionalDirectories = (claude.additionalDirectories as string[]).map((d) =>
