@@ -4,7 +4,7 @@ Thanks for your interest in contributing! This is a monorepo containing multiple
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 18.0.0
+- [Node.js](https://nodejs.org/) >= 20.0.0
 - npm (comes with Node.js)
 
 ## Repository Structure
@@ -135,6 +135,8 @@ Adding a new A2A wrapper (e.g. `a2a-claude`) requires no changes to the root con
    ├── src/
    │   ├── index.ts
    │   ├── cli.ts
+   │   ├── server/
+   │   │   └── index.ts          # Thin delegate to core's createA2AServer
    │   └── claude/
    │       ├── executor.ts       # Implements A2AExecutor
    │       ├── session-manager.ts
@@ -153,6 +155,8 @@ Adding a new A2A wrapper (e.g. `a2a-claude`) requires no changes to the root con
    - A `build`, `test`, and `typecheck` script
 
 3. Implement the `A2AExecutor` interface from `@a2a-wrapper/core` and wire it up with `createCli()`.
+
+   **`src/server/index.ts` must be a thin delegate to core's `createA2AServer()`** — do not hand-roll Express routing, agent card building, or event publishing. All A2A protocol wiring (agent card, JSON-RPC/REST transports, v1.0/v0.3 version negotiation) lives in `@a2a-wrapper/core` on purpose, so every wrapper gets protocol updates for free. Follow the pattern in any existing `a2a-*/src/server/index.ts` — call `createA2AServer(config, executorFactory, options)` and use `registerRoutes` for wrapper-specific endpoints only.
 
 4. Run `npm install` at the repo root to link the new package.
 
@@ -180,7 +184,7 @@ The `a2a-*` workspace glob in the root `package.json` automatically picks up the
    ```bash
    npx changeset
    ```
-5. Open a pull request against `main`. CI will build and test across Node.js 18, 20, and 22.
+5. Open a pull request against `main`. CI will build and test across Node.js 20 and 22.
 6. Address review feedback and ensure CI passes.
 
 ## Code of Conduct
