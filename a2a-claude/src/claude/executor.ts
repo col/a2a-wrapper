@@ -251,11 +251,17 @@ export class ClaudeExecutor implements AgentExecutor {
 
       const turnFn = async (): Promise<void> => {
         let timedOut = false;
+        // A prompt timeout of 0 (or any value <= 0) disables the bound entirely:
+        // the turn runs until the SDK iterator completes. Without this guard
+        // setTimeout would coerce such a delay to the next tick and abort at once.
         const promptTimeout = this.config.timeouts.prompt ?? 600_000;
-        const timer = setTimeout(() => {
-          timedOut = true;
-          abortController.abort();
-        }, promptTimeout);
+        const timer =
+          promptTimeout > 0
+            ? setTimeout(() => {
+                timedOut = true;
+                abortController.abort();
+              }, promptTimeout)
+            : null;
 
         try {
           publishStatus(bus, taskId, contextId, "working", "Processing request...");
@@ -330,7 +336,7 @@ export class ClaudeExecutor implements AgentExecutor {
             (err.name === "AbortError" || err.message.includes("abort") || err.message.includes("canceled"));
 
           if (isAbort && timedOut) {
-            const msg = `Prompt timed out after ${this.config.timeouts.prompt ?? 600_000}ms.`;
+            const msg = `Prompt timed out after ${promptTimeout}ms.`;
             log.error("Task execution timed out", { taskId });
             publishStatus(bus, taskId, contextId, "failed", msg, true);
             bus.finished();
@@ -344,7 +350,7 @@ export class ClaudeExecutor implements AgentExecutor {
             bus.finished();
           }
         } finally {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
           this.sessionManager?.untrackExecution(taskId);
         }
       };

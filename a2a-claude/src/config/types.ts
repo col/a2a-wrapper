@@ -188,7 +188,12 @@ export interface FeatureFlags {
 // ─── Timeout Config ─────────────────────────────────────────────────────────
 
 export interface TimeoutConfig {
-  /** Timeout for a single prompt in ms (default: 600_000 = 10 min) */
+  /**
+   * Timeout for a single prompt in ms (default: 600_000 = 10 min).
+   * Set to `0` (or any value <= 0) to disable the timeout entirely, letting a
+   * turn run until it completes. See the README for the caveat about turns
+   * being serialized per context.
+   */
   prompt?: number;
 }
 

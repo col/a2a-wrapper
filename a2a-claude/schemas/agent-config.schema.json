@@ -624,7 +624,7 @@
       "description": "Timeout settings.",
       "properties": {
         "prompt": {
-          "description": "Timeout for a single prompt in ms (default: 600_000 = 10 min)",
+          "description": "Timeout for a single prompt in ms (default: 600_000 = 10 min). Set to 0 (or any value <= 0) to disable the timeout entirely.",
           "type": "number"
         }
       },
