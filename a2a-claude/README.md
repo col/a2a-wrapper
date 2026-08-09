@@ -198,6 +198,14 @@ Two more things worth knowing:
 }
 ```
 
+### Prompt timeout
+
+`timeouts.prompt` bounds a single turn, in milliseconds (default `600000`, ten minutes). When it elapses the turn is aborted and the task is published as `failed`.
+
+Set it to `0` — or any value `<= 0` — to disable the bound entirely and let a turn run until it completes. This is the right setting for agents whose turns legitimately run for hours.
+
+Disabling it has one consequence worth knowing: turns are serialized per context, so a turn that never finishes holds its context's queue indefinitely and every later turn on the same `contextId` blocks behind it. Cancelling the task (`tasks/cancel`) still aborts the running turn and is the escape hatch.
+
 ### Permission modes
 
 Claude Code's `permissionMode` controls whether tool calls are auto-approved. Headless A2A execution cannot show an interactive approval prompt to a human, so two of the SDK's four modes are rejected at startup:
