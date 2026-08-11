@@ -104,4 +104,14 @@ describe("SessionManager", () => {
     expect(vi.getTimerCount()).toBe(0);
     m.stopCleanup();
   });
+
+  it("treats an unset ttl as disabled in both eviction paths", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: undefined });
+    const s1 = m.getOrCreate("ctx-1");
+    m.startCleanup(500, DEFAULTS.session.ttl ?? 0);
+    vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1000);
+    m.stopCleanup();
+    expect(m.getOrCreate("ctx-1")).toBe(s1);
+  });
 });
