@@ -113,3 +113,53 @@ export class RateLimitTracker {
     return snapshot;
   }
 }
+
+/** A2A task states this wrapper is willing to publish for a rate limit. */
+export type RateLimitTaskState = "input-required" | "failed" | "auth-required";
+
+const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
+  five_hour: "5-hour limit",
+  seven_day: "7-day limit",
+  seven_day_opus: "7-day Opus limit",
+  seven_day_sonnet: "7-day Sonnet limit",
+  seven_day_overage_included: "7-day limit (overage included)",
+  overage: "overage limit",
+};
+
+/**
+ * Human-readable status text. An unknown limit type drops the parenthetical
+ * rather than leaking a raw enum, and an unknown reset time drops the clause
+ * rather than printing a fabricated one.
+ */
+export function renderRateLimitMessage(
+  snapshot: RateLimitSnapshot,
+  taskState: RateLimitTaskState,
+): string {
+  const label = snapshot.rateLimitType ? RATE_LIMIT_TYPE_LABELS[snapshot.rateLimitType] : undefined;
+  const parts: string[] = [label ? `Rate limit reached (${label}).` : "Rate limit reached."];
+
+  if (snapshot.resetsAt !== undefined) {
+    parts.push(`Resets at ${new Date(snapshot.resetsAt).toISOString()}.`);
+  }
+
+  // A terminal task cannot accept another message, so the prose must not say it can.
+  parts.push(
+    taskState === "failed"
+      ? "Retry on the same contextId to continue this conversation."
+      : "Send another message on this task to continue.",
+  );
+
+  return parts.join(" ");
+}
+
+/** Machine-readable equivalent, for orchestrators that schedule their own retry. */
+export function rateLimitMetadata(snapshot: RateLimitSnapshot): Record<string, unknown> {
+  const meta: Record<string, unknown> = { reason: "rate_limit", source: snapshot.source };
+  if (snapshot.rateLimitType !== undefined) meta.rateLimitType = snapshot.rateLimitType;
+  if (snapshot.resetsAt !== undefined) {
+    meta.resetsAt = snapshot.resetsAt;
+    meta.resetsAtIso = new Date(snapshot.resetsAt).toISOString();
+  }
+  if (snapshot.utilization !== undefined) meta.utilization = snapshot.utilization;
+  return meta;
+}
