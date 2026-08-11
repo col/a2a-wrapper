@@ -185,7 +185,12 @@ Two more things worth knowing:
     "emitThinkingEvents": true,
     "emitToolEvents": true,
     "emitFileChangeEvents": true,
-    "emitTodoEvents": true
+    "emitTodoEvents": true,
+    "emitRateLimitEvents": true
+  },
+
+  "rateLimit": {
+    "taskState": "input-required"
   },
 
   "timeouts": {
@@ -308,11 +313,29 @@ then tells the client to retry on the same `contextId` instead.
 Rate limit details (`resetsAt`, `rateLimitType`) are only available under
 claude.ai subscription auth. Under API key, Bedrock, or Vertex the wrapper still
 ends the turn cleanly, but the message omits the reset time because the SDK does
-not report one.
+not report one. Details are never invented: a limit type or reset time is
+carried onto a later rejection only if the SDK had already reported that limit
+under pressure, and a reset time that is not in the future is dropped rather
+than printed.
+
+A rejection whose overage window is still open (`overageStatus` of `allowed` or
+`allowed_warning`) is treated as a warning, not a rejection — the request may
+well proceed on overage credits, and if it does not, the assistant's own
+`rate_limit` error still ends the turn. When the SDK reports
+`errorCode: "credits_required"`, no reset will restore capacity, so the message
+says additional credits are required and omits the reset clause entirely.
 
 Warnings — approaching a limit, or an internal retry after a 429 — do not end
 the turn. They surface as `rate_limit` sideband events, which can be disabled
-with `features.emitRateLimitEvents: false`.
+with `features.emitRateLimitEvents: false`; that flag only suppresses the
+sideband events, and the turn still ends on a rejection either way.
+
+The SDK retries 429s internally before giving up, and the wrapper does not
+shorten that: those retries still run to exhaustion inside the same
+`timeouts.prompt` window. They are at least visible now, as `rate_limit`
+sideband events with `action: "retrying"` carrying the SDK's `attempt`,
+`maxRetries`, and `delayMs`. Set a lower `timeouts.prompt` if a retry storm
+burning the window matters more to you than the retries succeeding.
 
 ## Example Agents
 
@@ -391,6 +414,7 @@ Sideband events are published through `AgentEventEmitter` for every Claude Agent
 | `decision` (`kind: "permission_denied"`) | SDK `system`/`permission_denied` message | Tool name + sanitized message |
 | `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns` |
 | `agent_error` | SDK `result` failure subtypes / `error` message | Sanitized error message; reason mapped from the SDK's failure subtype (e.g. max turns, max budget) |
+| `rate_limit` | SDK `rate_limit_event`, `system`/`api_retry` with `error: "rate_limit"`, or an assistant `rate_limit` error | `action` is `"ended_turn"` (rejection — the turn stops), `"retrying"` (SDK internal retry, with the `retry` counters), or `"warning"`; carries `status` plus `rateLimitType` / `resetsAt` / `utilization` when the SDK reports them. Controlled by `features.emitRateLimitEvents` |
 
 ## Docker
 

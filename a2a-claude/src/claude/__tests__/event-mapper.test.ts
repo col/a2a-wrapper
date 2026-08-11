@@ -221,6 +221,21 @@ describe("EventMapper.handleRateLimit", () => {
     expect(emitted.map((e) => e.data.action)).toEqual(["retrying", "warning"]);
   });
 
+  it("carries the SDK retry counters on a retry storm", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleRateLimit({
+      kind: "warning",
+      snapshot: {
+        status: "allowed_warning", source: "api_retry",
+        retry: { attempt: 3, maxRetries: 5, delayMs: 8000 },
+      },
+    });
+    expect(emitted[0].data).toMatchObject({
+      action: "retrying",
+      retry: { attempt: 3, maxRetries: 5, delayMs: 8000 },
+    });
+  });
+
   it("emits nothing for a none verdict", () => {
     const { mapper, emitted } = makeMapper();
     mapper.handleRateLimit({ kind: "none" });

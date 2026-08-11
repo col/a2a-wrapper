@@ -67,11 +67,18 @@ function statusText(events: PublishedEvent[]): string {
   return part?.$case === "text" ? part.value ?? "" : "";
 }
 
+/**
+ * The tracker drops a reset time that is not in the future, so the fixture is
+ * relative to now rather than a literal that eventually ages into the past.
+ */
+const RESETS_AT = Date.now() + 3_600_000;
+const RESETS_AT_ISO = new Date(RESETS_AT).toISOString();
+
 const REJECTED: SDKMessageLike = {
   type: "rate_limit_event",
   rate_limit_info: {
     status: "rejected", rateLimitType: "five_hour",
-    resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0), utilization: 1,
+    resetsAt: RESETS_AT, utilization: 1,
   },
 };
 
@@ -109,11 +116,37 @@ describe("ClaudeExecutor rate limit handling", () => {
 
     expect(states(events)).toEqual(["submitted", "working", "input-required"]);
     expect(statusText(events)).toContain("Rate limit reached (5-hour limit)");
-    expect(statusText(events)).toContain("2026-08-11T18:00:00.000Z");
+    expect(statusText(events)).toContain(RESETS_AT_ISO);
     expect(terminalStatus(events).metadata).toMatchObject({
       reason: "rate_limit", rateLimitType: "five_hour", utilization: 1,
     });
     expect(finished()).toBe(1);
+  });
+
+  it("tears down the SDK subprocess by aborting the turn", async () => {
+    const client = new FakeClaudeClient([rateLimitedTurn()]);
+    const ex = new ClaudeExecutor(config, () => client);
+
+    await ex.execute(makeCtx("t1", "ctx-1"), makeBus().bus);
+
+    expect(client.calls[0].options.abortController?.signal.aborted).toBe(true);
+  });
+
+  it("still ends as input-required when the iterator teardown throws", async () => {
+    // `break` awaits iterator.return(); a rejection there lands in the catch
+    // block, which must not discard an already-detected rate limit.
+    for (const teardownError of ["stream closed unexpectedly", "the stream was aborted"]) {
+      const client = new FakeClaudeClient([{ ...rateLimitedTurn(), throwOnReturn: teardownError }]);
+      const ex = new ClaudeExecutor(config, () => client);
+      const { bus, events, finished } = makeBus();
+
+      await ex.execute(makeCtx("t1", "ctx-1"), bus);
+
+      expect(states(events)).toEqual(["submitted", "working", "input-required"]);
+      expect(statusText(events)).toContain("Rate limit reached (5-hour limit)");
+      expect(terminalStatus(events).metadata).toMatchObject({ reason: "rate_limit" });
+      expect(finished()).toBe(1);
+    }
   });
 
   it("does not publish a response artifact for the interrupted turn", async () => {
