@@ -178,10 +178,6 @@
           "$ref": "#/definitions/TimeoutConfig",
           "description": "Timeout settings"
         },
-        "rateLimit": {
-          "$ref": "#/definitions/RateLimitConfig",
-          "description": "Behaviour when a Claude rate limit ends a turn."
-        },
         "logging": {
           "$ref": "#/definitions/LoggingConfig",
           "description": "Logging settings"
@@ -412,21 +408,6 @@
             "type": "string"
           },
           "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "RateLimitConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "taskState": {
-          "description": "A2A task state published when a rate limit ends a turn. Non-terminal states leave the task open so the client can continue it after the reset (default: \"input-required\").",
-          "enum": [
-            "input-required",
-            "failed",
-            "auth-required"
-          ],
-          "type": "string"
         }
       },
       "type": "object"

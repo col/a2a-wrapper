@@ -95,14 +95,14 @@ beforeEach(() => {
 afterEach(() => rmSync(ws, { recursive: true, force: true }));
 
 describe("ClaudeExecutor rate limit handling", () => {
-  it("ends the turn as input-required with reset details", async () => {
+  it("ends the turn as failed with reset details", async () => {
     const client = new FakeClaudeClient([rateLimitedTurn()]);
     const ex = new ClaudeExecutor(config, () => client);
     const { bus, events, finished } = makeBus();
 
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
 
-    expect(states(events)).toEqual(["submitted", "working", "input-required"]);
+    expect(states(events)).toEqual(["submitted", "working", "failed"]);
     expect(statusText(events)).toContain("Rate limit reached (5-hour limit)");
     expect(statusText(events)).toContain(RESETS_AT_ISO);
     expect(terminalStatus(events).metadata).toMatchObject({
@@ -120,7 +120,7 @@ describe("ClaudeExecutor rate limit handling", () => {
     expect(client.calls[0].options.abortController?.signal.aborted).toBe(true);
   });
 
-  it("still ends as input-required when the iterator teardown throws", async () => {
+  it("still ends as failed when the iterator teardown throws", async () => {
     // `break` awaits iterator.return(); a rejection there lands in the catch
     // block, which must not discard an already-detected rate limit.
     for (const teardownError of ["stream closed unexpectedly", "the stream was aborted"]) {
@@ -130,7 +130,7 @@ describe("ClaudeExecutor rate limit handling", () => {
 
       await ex.execute(makeCtx("t1", "ctx-1"), bus);
 
-      expect(states(events)).toEqual(["submitted", "working", "input-required"]);
+      expect(states(events)).toEqual(["submitted", "working", "failed"]);
       expect(statusText(events)).toContain("Rate limit reached (5-hour limit)");
       expect(terminalStatus(events).metadata).toMatchObject({ reason: "rate_limit" });
       expect(finished()).toBe(1);
@@ -147,7 +147,7 @@ describe("ClaudeExecutor rate limit handling", () => {
     expect(events.filter((e) => e.kind === "artifact-update")).toHaveLength(0);
   });
 
-  it("keeps the session resumable on the next turn", async () => {
+  it("resumes the same Claude session on a new task after the failure", async () => {
     const client = new FakeClaudeClient([
       rateLimitedTurn(),
       {
@@ -165,16 +165,15 @@ describe("ClaudeExecutor rate limit handling", () => {
     expect(client.calls[1].options.resume).toBe("sess-1");
   });
 
-  it("honours rateLimit.taskState: failed", async () => {
-    config.rateLimit = { taskState: "failed" };
+  it("points the client at the contextId rather than the closed task", async () => {
     const client = new FakeClaudeClient([rateLimitedTurn()]);
     const ex = new ClaudeExecutor(config, () => client);
     const { bus, events } = makeBus();
 
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
 
-    expect(states(events)).toEqual(["submitted", "working", "failed"]);
     expect(statusText(events)).toContain("same contextId");
+    expect(statusText(events)).not.toContain("this task");
   });
 
   it("omits the reset clause when the SDK reports no reset time", async () => {
@@ -190,9 +189,9 @@ describe("ClaudeExecutor rate limit handling", () => {
 
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
 
-    expect(states(events)).toEqual(["submitted", "working", "input-required"]);
+    expect(states(events)).toEqual(["submitted", "working", "failed"]);
     expect(statusText(events)).toBe(
-      "Rate limit reached. Send another message on this task to continue.",
+      "Rate limit reached. Retry on the same contextId to continue this conversation.",
     );
     expect(terminalStatus(events).metadata).not.toHaveProperty("resetsAt");
   });

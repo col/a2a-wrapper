@@ -50,7 +50,6 @@ const log = logger.child("executor");
 const VALID_PERMISSION_MODES = new Set(["acceptEdits", "dontAsk", "plan", "bypassPermissions"]);
 const VALID_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const VALID_THINKING_TYPES = new Set(["adaptive", "enabled", "disabled"]);
-const VALID_RATE_LIMIT_TASK_STATES = new Set(["input-required", "failed", "auth-required"]);
 
 export class ClaudeExecutor implements AgentExecutor {
   private readonly config: Required<AgentConfig>;
@@ -296,10 +295,15 @@ export class ClaudeExecutor implements AgentExecutor {
             publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
           }
 
-          const taskState = this.config.rateLimit.taskState ?? "input-required";
+          // Always terminal. The SDK cannot resume an interrupted turn — a
+          // follow-up is a new prompt regardless — so holding the task open
+          // would promise a continuation we never deliver. Continuity comes
+          // from the contextId → Claude session mapping, which survives a
+          // failed task, so the client just starts a new task on the same
+          // contextId once the limit resets.
           publishStatus(
-            bus, taskId, contextId, taskState,
-            renderRateLimitMessage(snapshot, taskState),
+            bus, taskId, contextId, "failed",
+            renderRateLimitMessage(snapshot),
             true,
             rateLimitMetadata(snapshot),
           );
@@ -589,14 +593,6 @@ export class ClaudeExecutor implements AgentExecutor {
       log.warn("settingSources is non-empty — host/project settings files will be loaded.", {
         settingSources: claude.settingSources,
       });
-    }
-
-    const rateLimitState = this.config.rateLimit?.taskState;
-    if (rateLimitState !== undefined && !VALID_RATE_LIMIT_TASK_STATES.has(rateLimitState)) {
-      throw new Error(
-        `rateLimit.taskState "${String(rateLimitState)}" is invalid. ` +
-        "Use one of: input-required, failed, auth-required.",
-      );
     }
   }
 
