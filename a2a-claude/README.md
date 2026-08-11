@@ -182,7 +182,7 @@ Two more things worth knowing:
 
   "session": {
     "reuseByContext": true,
-    "ttl": 3600000,
+    "ttl": 0,
     "cleanupInterval": 300000
   },
 
@@ -211,6 +211,15 @@ Two more things worth knowing:
 Set it to `0` — or any value `<= 0` — to disable the bound entirely and let a turn run until it completes. This is the right setting for agents whose turns legitimately run for hours.
 
 Disabling it has one consequence worth knowing: turns are serialized per context, so a turn that never finishes holds its context's queue indefinitely and every later turn on the same `contextId` blocks behind it. Cancelling the task (`tasks/cancel`) still aborts the running turn and is the escape hatch.
+
+### Session lifetime
+
+`session.ttl` is the idle expiry for the `contextId` → Claude session mapping.
+It defaults to `0`, which disables expiry: a conversation resumes the same
+Claude session indefinitely. Set a positive value only if you want conversations
+force-reset after a period of inactivity — note that when a session is evicted,
+the next turn on that `contextId` starts a brand-new Claude session with no
+memory of the conversation so far.
 
 ### Permission modes
 
