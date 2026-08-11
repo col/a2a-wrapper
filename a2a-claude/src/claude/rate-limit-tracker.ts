@@ -22,6 +22,11 @@ export interface RateLimitSnapshot {
   /** Epoch milliseconds. Undefined when no reset time was reported. */
   resetsAt?: number;
   utilization?: number;
+  /** SDK error code, e.g. "credits_required" — waiting for a reset won't help. */
+  errorCode?: string;
+  canPurchaseCredits?: boolean;
+  /** SDK internal retry counters. Populated only for `source: "api_retry"`. */
+  retry?: { attempt?: number; maxRetries?: number; delayMs?: number };
   source: "rate_limit_event" | "assistant_error" | "api_retry";
 }
 
@@ -41,7 +46,11 @@ const MS_THRESHOLD = 1e12;
 
 function normalizeResetsAt(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
-  return value < MS_THRESHOLD ? value * 1000 : value;
+  const ms = value < MS_THRESHOLD ? value * 1000 : value;
+  // A reset already in the past tells the client nothing useful; rendering
+  // "Resets at 2019-…" is worse than dropping the clause, and dropping matches
+  // the rest of this module's policy of never fabricating limit details.
+  return ms > Date.now() ? ms : undefined;
 }
 
 function readString(value: unknown): string | undefined {
@@ -50,6 +59,10 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function isStatus(value: unknown): value is RateLimitStatus {
@@ -68,7 +81,18 @@ export class RateLimitTracker {
     if (msg.type === "rate_limit_event") return this.observeLimitEvent(msg);
 
     if (msg.type === "system" && msg.subtype === "api_retry" && msg.error === "rate_limit") {
-      return { kind: "warning", snapshot: this.derive("allowed_warning", "api_retry") };
+      // The SDK's own retry counters are what an operator needs to recognise a
+      // retry storm burning the prompt window.
+      const retry = {
+        attempt: readNumber(msg.attempt),
+        maxRetries: readNumber(msg.max_retries),
+        delayMs: readNumber(msg.retry_delay_ms),
+      };
+      const hasRetryDetail = Object.values(retry).some((v) => v !== undefined);
+      return {
+        kind: "warning",
+        snapshot: this.derive("allowed_warning", "api_retry", hasRetryDetail ? retry : undefined),
+      };
     }
 
     if (msg.type === "assistant" && msg.error === "rate_limit") {
@@ -88,29 +112,56 @@ export class RateLimitTracker {
       rateLimitType: readString(info.rateLimitType),
       resetsAt: normalizeResetsAt(info.resetsAt),
       utilization: readNumber(info.utilization),
+      errorCode: readString(info.errorCode),
+      canPurchaseCredits: readBoolean(info.canUserPurchaseCredits),
       source: "rate_limit_event",
     };
     this.last = snapshot;
 
-    if (snapshot.status === "rejected") return { kind: "rejected", snapshot };
+    if (snapshot.status === "rejected") {
+      // The SDK documents no precedence between `status` and `overageStatus`,
+      // so when the base window is exhausted but overage is still open the
+      // request may well proceed on overage credits. Be permissive: if overage
+      // might carry the request we let the turn continue, and if it genuinely
+      // fails the assistant `error: "rate_limit"` path still ends the turn
+      // correctly. Being permissive costs a slightly later turn end; being
+      // aggressive kills turns that would have succeeded.
+      const overage = info.overageStatus;
+      if (overage === "allowed" || overage === "allowed_warning") {
+        return { kind: "warning", snapshot };
+      }
+      return { kind: "rejected", snapshot };
+    }
     if (snapshot.status === "allowed_warning") return { kind: "warning", snapshot };
     return NONE;
   }
 
   /**
-   * Build a snapshot for a signal that carries no limit details of its own,
-   * inheriting whatever the last `rate_limit_event` told us.
+   * Build a snapshot for a signal that carries no limit details of its own.
+   *
+   * Details are inherited only from a `rate_limit_event` that actually reported
+   * pressure: a bucket last seen at 20% utilization tells us nothing about
+   * whichever limit just rejected us, and naming it would fabricate a limit
+   * type and reset time the client would act on. Utilization is never carried
+   * — a stale figure sitting next to a rejection contradicts itself.
+   *
+   * Read-only by design: writing back to `this.last` would make an inherited
+   * value the basis for the next derive, propagating one stale limit type
+   * indefinitely across a run of `api_retry` messages.
    */
-  private derive(status: RateLimitStatus, source: RateLimitSnapshot["source"]): RateLimitSnapshot {
-    const snapshot: RateLimitSnapshot = {
+  private derive(
+    status: RateLimitStatus,
+    source: RateLimitSnapshot["source"],
+    retry?: RateLimitSnapshot["retry"],
+  ): RateLimitSnapshot {
+    const prev = this.last;
+    const inherit = prev?.status === "allowed_warning" || prev?.status === "rejected";
+    return {
       status,
-      rateLimitType: this.last?.rateLimitType,
-      resetsAt: this.last?.resetsAt,
-      utilization: this.last?.utilization,
+      ...(inherit ? { rateLimitType: prev?.rateLimitType, resetsAt: prev?.resetsAt } : {}),
+      ...(retry !== undefined ? { retry } : {}),
       source,
     };
-    this.last = snapshot;
-    return snapshot;
   }
 }
 
@@ -135,10 +186,15 @@ export function renderRateLimitMessage(
   snapshot: RateLimitSnapshot,
   taskState: RateLimitTaskState,
 ): string {
+  // Credits exhausted is not a clock problem: no reset time will restore
+  // capacity, so naming one would send the client off to wait for nothing.
+  const creditsRequired = snapshot.errorCode === "credits_required";
   const label = snapshot.rateLimitType ? RATE_LIMIT_TYPE_LABELS[snapshot.rateLimitType] : undefined;
-  const parts: string[] = [label ? `Rate limit reached (${label}).` : "Rate limit reached."];
+  const parts: string[] = creditsRequired
+    ? ["Rate limit reached — additional credits are required to continue."]
+    : [label ? `Rate limit reached (${label}).` : "Rate limit reached."];
 
-  if (snapshot.resetsAt !== undefined) {
+  if (!creditsRequired && snapshot.resetsAt !== undefined) {
     parts.push(`Resets at ${new Date(snapshot.resetsAt).toISOString()}.`);
   }
 
@@ -161,5 +217,7 @@ export function rateLimitMetadata(snapshot: RateLimitSnapshot): Record<string, u
     meta.resetsAtIso = new Date(snapshot.resetsAt).toISOString();
   }
   if (snapshot.utilization !== undefined) meta.utilization = snapshot.utilization;
+  if (snapshot.errorCode !== undefined) meta.errorCode = snapshot.errorCode;
+  if (snapshot.canPurchaseCredits !== undefined) meta.canPurchaseCredits = snapshot.canPurchaseCredits;
   return meta;
 }

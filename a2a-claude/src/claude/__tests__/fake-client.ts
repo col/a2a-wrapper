@@ -16,6 +16,11 @@ export interface FakeTurnScript {
   delayMs?: number;
   /** After yielding messages, hang until aborted (for cancel/timeout tests). */
   hangAfter?: boolean;
+  /**
+   * Make `iterator.return()` reject — what a consumer's `break` hits when the
+   * SDK's teardown fails. A string customizes the error message.
+   */
+  throwOnReturn?: boolean | string;
 }
 
 function abortError(): Error {
@@ -32,7 +37,21 @@ class FakeQuery implements QueryLike {
     this.interrupted = true;
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<SDKMessageLike> {
+  [Symbol.asyncIterator](): AsyncIterator<SDKMessageLike> {
+    const gen = this.generate();
+    const failure = this.script.throwOnReturn;
+    if (!failure) return gen;
+    return {
+      next: () => gen.next(),
+      throw: (e?: unknown) => gen.throw(e),
+      return: async (value?: unknown) => {
+        await gen.return(value as never).catch(() => {});
+        throw new Error(typeof failure === "string" ? failure : "iterator teardown failed");
+      },
+    } as AsyncIterator<SDKMessageLike>;
+  }
+
+  private async *generate(): AsyncGenerator<SDKMessageLike> {
     for (const msg of this.script.messages) {
       if (this.signal?.aborted) throw abortError();
       if (this.script.delayMs) await new Promise((r) => setTimeout(r, this.script.delayMs));

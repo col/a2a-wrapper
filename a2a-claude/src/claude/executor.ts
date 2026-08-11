@@ -270,6 +270,42 @@ export class ClaudeExecutor implements AgentExecutor {
               }, promptTimeout)
             : null;
 
+        // Hoisted above the try: `break` inside `for await` awaits
+        // iterator.return(), and a rejection there lands in the catch block,
+        // which must still be able to see a rate limit we already detected.
+        let rateLimited: RateLimitSnapshot | null = null;
+        let finalText = "";
+        let streamArtifactStarted = false;
+        const streamArtifactId = `response-${taskId}`;
+        const streaming = this.config.features.streamArtifactChunks === true;
+
+        /** Single definition of the rate-limit ending, used by both paths. */
+        const endTurnRateLimited = (snapshot: RateLimitSnapshot): void => {
+          // Tear down the subprocess — same break-then-abort teardown the
+          // plugin preflight uses. Waiting out a reset is never our call.
+          // `query.interrupt()` (which cancelTask also calls) is not needed
+          // here: the `break` already closed the iterator, so there is no
+          // in-flight consumer left to interrupt, and abort() is what actually
+          // stops the subprocess.
+          abortController.abort();
+
+          // Already-sent chunks would otherwise leave the client's artifact
+          // open forever. This closes the stream; finalText is intentionally
+          // "" here, since no success result arrives on this path.
+          if (streaming && streamArtifactStarted) {
+            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
+          }
+
+          const taskState = this.config.rateLimit.taskState ?? "input-required";
+          publishStatus(
+            bus, taskId, contextId, taskState,
+            renderRateLimitMessage(snapshot, taskState),
+            true,
+            rateLimitMetadata(snapshot),
+          );
+          bus.finished();
+        };
+
         try {
           publishStatus(bus, taskId, contextId, "working", "Processing request...");
 
@@ -280,13 +316,8 @@ export class ClaudeExecutor implements AgentExecutor {
           const q = this.client!.runQuery(promptText, options);
           this.sessionManager!.attachQuery(taskId, q);
 
-          let finalText = "";
           let resultError: string | null = null;
           const rateLimits = new RateLimitTracker();
-          let rateLimited: RateLimitSnapshot | null = null;
-          const streamArtifactId = `response-${taskId}`;
-          let streamArtifactStarted = false;
-          const streaming = this.config.features.streamArtifactChunks === true;
 
           for await (const msg of q as AsyncIterable<SDKMessageLike>) {
             const verdict = rateLimits.observe(msg);
@@ -333,25 +364,7 @@ export class ClaudeExecutor implements AgentExecutor {
           }
 
           if (rateLimited) {
-            // Tear down the subprocess — same break-then-abort teardown the
-            // plugin preflight uses. Waiting out a reset is never our call.
-            abortController.abort();
-
-            // Already-sent chunks would otherwise leave the client's artifact
-            // open forever. This closes the stream; finalText is intentionally
-            // "" here, since no success result arrives on this path.
-            if (streaming && streamArtifactStarted) {
-              publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
-            }
-
-            const taskState = this.config.rateLimit?.taskState ?? "input-required";
-            publishStatus(
-              bus, taskId, contextId, taskState,
-              renderRateLimitMessage(rateLimited, taskState),
-              true,
-              rateLimitMetadata(rateLimited),
-            );
-            bus.finished();
+            endTurnRateLimited(rateLimited);
             return;
           }
 
@@ -370,6 +383,20 @@ export class ClaudeExecutor implements AgentExecutor {
           publishStatus(bus, taskId, contextId, "completed", undefined, true);
           bus.finished();
         } catch (err) {
+          // A detected rate limit outranks whatever the teardown threw: the
+          // `break` above awaits iterator.return(), so a failing teardown would
+          // otherwise discard the real reason this turn ended — and a teardown
+          // error whose text merely contains "abort" would fall into the
+          // silent branch below, leaving the task open with no terminal event.
+          if (rateLimited) {
+            log.info("Rate limit ended the turn; ignoring teardown error", {
+              taskId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            endTurnRateLimited(rateLimited);
+            return;
+          }
+
           const isAbort =
             err instanceof Error &&
             (err.name === "AbortError" || err.message.includes("abort") || err.message.includes("canceled"));

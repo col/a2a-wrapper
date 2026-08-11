@@ -132,6 +132,9 @@ export class EventMapper {
       ...(snapshot.rateLimitType !== undefined ? { rateLimitType: snapshot.rateLimitType } : {}),
       ...(snapshot.resetsAt !== undefined ? { resetsAt: snapshot.resetsAt } : {}),
       ...(snapshot.utilization !== undefined ? { utilization: snapshot.utilization } : {}),
+      // Retry counters make a retry storm legible: how many attempts remain and
+      // how long each backoff is burning out of the prompt window.
+      ...(snapshot.retry !== undefined ? { retry: snapshot.retry } : {}),
     });
   }
 
