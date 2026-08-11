@@ -165,8 +165,9 @@ export interface SessionConfig {
   /** Reuse sessions by A2A contextId (default: true) */
   reuseByContext?: boolean;
   /**
-   * Session idle TTL in ms. 0 or less disables session expiry entirely, so a
-   * contextId keeps resuming the same Claude session indefinitely.
+   * Session TTL in ms, measured from when the session was created — not from
+   * last use. 0 or less disables session expiry entirely, so a contextId keeps
+   * resuming the same Claude session indefinitely.
    * @default 0
    */
   ttl?: number;

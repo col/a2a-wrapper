@@ -208,12 +208,14 @@ Disabling it has one consequence worth knowing: turns are serialized per context
 
 ### Session lifetime
 
-`session.ttl` is the idle expiry for the `contextId` → Claude session mapping.
-It defaults to `0`, which disables expiry: a conversation resumes the same
-Claude session indefinitely. Set a positive value only if you want conversations
-force-reset after a period of inactivity — note that when a session is evicted,
-the next turn on that `contextId` starts a brand-new Claude session with no
-memory of the conversation so far.
+`session.ttl` controls expiry of the `contextId` → Claude session mapping. It
+defaults to `0`, which disables expiry: a conversation resumes the same Claude
+session indefinitely. A positive value expires a session that many milliseconds
+after it was **created** — measured from the conversation's first message, not
+its last — so an active conversation is reset on a fixed schedule rather than
+after a period of inactivity. When a session is evicted, the next turn on that
+`contextId` starts a brand-new Claude session with no memory of the conversation
+so far.
 
 ### Permission modes
 

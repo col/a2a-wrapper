@@ -106,7 +106,7 @@ export class SessionManager {
 
   startCleanup(interval: number, ttl: number): void {
     if (ttl <= 0) {
-      log.info("Session expiry disabled — sessions retained until shutdown", { "session.ttl": ttl });
+      log.info("Session expiry disabled — sessions retained until shutdown", { ttl });
       return;
     }
     if (interval <= 0) return;
