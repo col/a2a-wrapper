@@ -126,9 +126,6 @@
         "memory": {
           "$ref": "#/definitions/MemoryConfig"
         },
-        "rateLimit": {
-          "$ref": "#/definitions/RateLimitConfig"
-        },
         "server": {
           "$ref": "#/definitions/ServerConfig"
         },
@@ -575,21 +572,6 @@
       },
       "type": "object"
     },
-    "RateLimitConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "taskState": {
-          "description": "A2A task state published when a rate limit ends a turn. Non-terminal states leave the task open so the client can continue it after the reset (default: \"input-required\").",
-          "enum": [
-            "input-required",
-            "failed",
-            "auth-required"
-          ],
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
     "ServerConfig": {
       "additionalProperties": false,
       "properties": {
@@ -629,7 +611,7 @@
           "type": "string"
         },
         "ttl": {
-          "description": "Session TTL in ms, measured from session creation — not from last use. 0 or less disables expiry entirely (default: 0 — sessions never expire).",
+          "description": "Session TTL in ms, measured from session creation \u2014 not from last use. 0 or less disables expiry entirely (default: 0 \u2014 sessions never expire).",
           "type": "number"
         }
       },

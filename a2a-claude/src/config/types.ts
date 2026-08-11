@@ -162,18 +162,6 @@ export interface SessionConfig {
   cleanupInterval?: number;
 }
 
-// ─── Rate Limit Config ──────────────────────────────────────────────────────
-
-export interface RateLimitConfig {
-  /**
-   * A2A task state published when a rate limit ends a turn. Non-terminal
-   * states ("input-required", "auth-required") leave the task open so the
-   * client can continue the same task once the limit resets. Use "failed" for
-   * A2A clients that cannot handle a non-terminal task.
-   * @default "input-required"
-   */
-  taskState?: "input-required" | "failed" | "auth-required";
-}
 
 // ─── Feature Flags ──────────────────────────────────────────────────────────
 
@@ -263,8 +251,6 @@ export interface AgentConfig {
   session?: SessionConfig;
   features?: FeatureFlags;
   timeouts?: TimeoutConfig;
-  /** Behaviour when a Claude rate limit ends a turn. */
-  rateLimit?: RateLimitConfig;
   logging?: LoggingConfig;
   /** MCP servers. The key "a2a-subagents" is reserved for the sub-agent bridge. */
   mcp?: Record<string, McpServerConfig>;

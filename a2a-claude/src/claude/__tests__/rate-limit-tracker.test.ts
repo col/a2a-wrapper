@@ -206,55 +206,35 @@ describe("RateLimitTracker", () => {
 describe("renderRateLimitMessage", () => {
   const base = { status: "rejected", source: "rate_limit_event" } as const;
 
+  // The task is always terminal, so every message ends by pointing the client
+  // at the contextId rather than at the (now closed) task.
+  const CONTINUE = "Retry on the same contextId to continue this conversation.";
+
   it("names the limit type and the reset time", () => {
-    const msg = renderRateLimitMessage(
-      { ...base, rateLimitType: "five_hour", resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0) },
-      "input-required",
-    );
-    expect(msg).toBe(
-      "Rate limit reached (5-hour limit). Resets at 2026-08-11T18:00:00.000Z. " +
-      "Send another message on this task to continue.",
-    );
+    const msg = renderRateLimitMessage({
+      ...base, rateLimitType: "five_hour", resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0),
+    });
+    expect(msg).toBe(`Rate limit reached (5-hour limit). Resets at 2026-08-11T18:00:00.000Z. ${CONTINUE}`);
   });
 
   it("omits the reset clause when no reset time is known", () => {
-    const msg = renderRateLimitMessage({ ...base, rateLimitType: "seven_day" }, "input-required");
-    expect(msg).toBe("Rate limit reached (7-day limit). Send another message on this task to continue.");
+    expect(renderRateLimitMessage({ ...base, rateLimitType: "seven_day" }))
+      .toBe(`Rate limit reached (7-day limit). ${CONTINUE}`);
   });
 
   it("omits the parenthetical for an unknown or absent limit type", () => {
-    expect(renderRateLimitMessage(base, "input-required")).toBe(
-      "Rate limit reached. Send another message on this task to continue.",
-    );
-    expect(renderRateLimitMessage({ ...base, rateLimitType: "novel_limit" }, "input-required")).toBe(
-      "Rate limit reached. Send another message on this task to continue.",
-    );
+    expect(renderRateLimitMessage(base)).toBe(`Rate limit reached. ${CONTINUE}`);
+    expect(renderRateLimitMessage({ ...base, rateLimitType: "novel_limit" }))
+      .toBe(`Rate limit reached. ${CONTINUE}`);
   });
 
   it("asks for credits instead of a reset time when credits are required", () => {
-    const msg = renderRateLimitMessage(
-      {
-        ...base, errorCode: "credits_required", canPurchaseCredits: true,
-        rateLimitType: "five_hour", resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0),
-      },
-      "input-required",
-    );
     // Waiting for the reset cannot help here, so the clause is omitted entirely.
-    expect(msg).toBe(
-      "Rate limit reached — additional credits are required to continue. " +
-      "Send another message on this task to continue.",
-    );
-    expect(renderRateLimitMessage({ ...base, errorCode: "credits_required" }, "failed")).toBe(
-      "Rate limit reached — additional credits are required to continue. " +
-      "Retry on the same contextId to continue this conversation.",
-    );
-  });
-
-  it("tells the client to use the same contextId when the task state is terminal", () => {
-    const msg = renderRateLimitMessage({ ...base, rateLimitType: "five_hour" }, "failed");
-    expect(msg).toBe(
-      "Rate limit reached (5-hour limit). Retry on the same contextId to continue this conversation.",
-    );
+    const msg = renderRateLimitMessage({
+      ...base, errorCode: "credits_required", canPurchaseCredits: true,
+      rateLimitType: "five_hour", resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0),
+    });
+    expect(msg).toBe(`Rate limit reached — additional credits are required to continue. ${CONTINUE}`);
   });
 });
 
