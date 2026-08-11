@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeExecutor } from "../executor.js";
+import { SessionManager } from "../session-manager.js";
 import { FakeClaudeClient, happyTurn } from "./fake-client.js";
 import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig } from "../../config/types.js";
@@ -268,6 +269,21 @@ describe("ClaudeExecutor validation", () => {
       expect(warnSpy.mock.calls.some((call) => String(call[0]).includes("settingSources"))).toBe(true);
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  it("starts session cleanup with expiry and sweep disabled when both are unset", async () => {
+    const spy = vi.spyOn(SessionManager.prototype, "startCleanup");
+    try {
+      delete (config.session as { ttl?: number }).ttl;
+      delete (config.session as { cleanupInterval?: number }).cleanupInterval;
+      const ex = new ClaudeExecutor(config, () => new FakeClaudeClient([happyTurn("s", "x")]));
+
+      await ex.initialize();
+
+      expect(spy).toHaveBeenCalledWith(0, 0);
+    } finally {
+      spy.mockRestore();
     }
   });
 });

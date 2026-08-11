@@ -123,8 +123,8 @@ export class ClaudeExecutor implements AgentExecutor {
 
     this.sessionManager = new SessionManager(this.config);
     this.sessionManager.startCleanup(
-      this.config.session.cleanupInterval ?? 300_000,
-      this.config.session.ttl ?? 3_600_000,
+      this.config.session.cleanupInterval ?? 0,
+      this.config.session.ttl ?? 0,
     );
 
     this.initialized = true;

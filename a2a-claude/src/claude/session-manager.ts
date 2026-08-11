@@ -42,14 +42,14 @@ export class SessionManager {
 
   getOrCreate(contextId: string): ClaudeSession {
     const sessionCfg = this.config.session;
-    const ttl = sessionCfg.ttl ?? 3_600_000;
+    const ttl = sessionCfg.ttl ?? 0;
     const reuse = sessionCfg.reuseByContext ?? true;
 
     if (reuse && contextId) {
       const existing = this.sessions.get(contextId);
       if (existing) {
         const age = Date.now() - existing.createdAt;
-        if (age < ttl) {
+        if (ttl <= 0 || age < ttl) {
           existing.lastAccessedAt = Date.now();
           log.debug("Reusing Claude session", { contextId, sessionId: existing.sessionId });
           return existing;
@@ -105,7 +105,21 @@ export class SessionManager {
   }
 
   startCleanup(interval: number, ttl: number): void {
-    if (interval <= 0) return;
+    if (ttl <= 0) {
+      log.info("Session expiry disabled — sessions retained until shutdown", { ttl });
+      return;
+    }
+    // Reached only when ttl > 0, so the operator wants expiry but has not asked
+    // for a background sweep. Lazy expiry in getOrCreate still applies; sessions
+    // nobody looks up again are simply never reclaimed. Say so rather than
+    // silently skipping, since cleanupInterval now defaults to 0.
+    if (interval <= 0) {
+      log.info(
+        "Session cleanup sweep disabled — expired sessions are only reclaimed when their context is next used",
+        { ttl, cleanupInterval: interval },
+      );
+      return;
+    }
     this.cleanupTimer = setInterval(() => {
       const now = Date.now();
       for (const [contextId, session] of this.sessions.entries()) {

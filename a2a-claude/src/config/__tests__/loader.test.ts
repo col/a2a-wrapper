@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveConfig } from "../loader.js";
+import { DEFAULTS } from "../defaults.js";
 
 describe("resolveConfig", () => {
   let dir: string;
@@ -166,5 +167,59 @@ describe("resolveConfig", () => {
     const source = cfg.claude.marketplaces!.mk.source;
     expect(source.ref).toBe("v9.9.9");
     expect(source.token).toBe("ghp_secret");
+  });
+});
+
+describe("session defaults", () => {
+  it("disables session expiry by default", () => {
+    expect(DEFAULTS.session.ttl).toBe(0);
+  });
+
+  it("disables the cleanup sweep by default", () => {
+    expect(DEFAULTS.session.cleanupInterval).toBe(0);
+  });
+
+  it("resolves ttl to 0 when a config file omits session.ttl", () => {
+    const dir = mkdtempSync(join(tmpdir(), "a2a-claude-test-"));
+    try {
+      const p = join(dir, "config.json");
+      writeFileSync(p, JSON.stringify({
+        agentCard: { name: "T", description: "d" },
+      }));
+      const cfg = resolveConfig(p);
+      expect(cfg.session.ttl).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an explicit positive session.ttl through the merge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "a2a-claude-test-"));
+    try {
+      const p = join(dir, "config.json");
+      writeFileSync(p, JSON.stringify({
+        agentCard: { name: "T", description: "d" },
+        session: { ttl: 3_600_000 },
+      }));
+      const cfg = resolveConfig(p);
+      expect(cfg.session.ttl).toBe(3_600_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an explicit session.ttl of 0 through the merge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "a2a-claude-test-"));
+    try {
+      const p = join(dir, "config.json");
+      writeFileSync(p, JSON.stringify({
+        agentCard: { name: "T", description: "d" },
+        session: { ttl: 0 },
+      }));
+      const cfg = resolveConfig(p);
+      expect(cfg.session.ttl).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -37,6 +37,25 @@ describe("SessionManager", () => {
     expect(s2).not.toBe(s1);
   });
 
+  it("never expires sessions when ttl is 0", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 0 });
+    const s1 = m.getOrCreate("ctx-1");
+    s1.sessionId = "sess-abc";
+    vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1000); // one week
+    const s2 = m.getOrCreate("ctx-1");
+    expect(s2).toBe(s1);
+    expect(s2.sessionId).toBe("sess-abc");
+  });
+
+  it("treats a negative ttl as disabled", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: -1 });
+    const s1 = m.getOrCreate("ctx-1");
+    vi.advanceTimersByTime(86_400_000);
+    expect(m.getOrCreate("ctx-1")).toBe(s1);
+  });
+
   it("tracks, retrieves, and untracks executions", () => {
     const m = mgr();
     const ac = new AbortController();
@@ -66,5 +85,52 @@ describe("SessionManager", () => {
     m.stopCleanup();
     expect(m.getOrCreate("ctx-stale")).not.toBe(stale); // was cleaned
     expect(m.getOrCreate("ctx-busy")).toBe(busy);       // was preserved
+  });
+
+  it("does not evict during cleanup when ttl is 0", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 0 });
+    const s1 = m.getOrCreate("ctx-1");
+    m.startCleanup(500, 0);
+    vi.advanceTimersByTime(60_000);
+    m.stopCleanup();
+    expect(m.getOrCreate("ctx-1")).toBe(s1);
+  });
+
+  it("installs no cleanup timer when ttl is 0", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 0 });
+    m.startCleanup(500, 0);
+    expect(vi.getTimerCount()).toBe(0);
+    m.stopCleanup();
+  });
+
+  it("installs no cleanup timer when the sweep is disabled but ttl is set", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 1000, cleanupInterval: 0 });
+    m.startCleanup(0, 1000);
+    expect(vi.getTimerCount()).toBe(0);
+    m.stopCleanup();
+  });
+
+  it("still expires lazily when the sweep is disabled", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 1000, cleanupInterval: 0 });
+    const s1 = m.getOrCreate("ctx-1");
+    m.startCleanup(0, 1000);
+    vi.advanceTimersByTime(1500);
+    m.stopCleanup();
+    // No sweep ran, but getOrCreate's own age check must still evict.
+    expect(m.getOrCreate("ctx-1")).not.toBe(s1);
+  });
+
+  it("treats an unset ttl as disabled in both eviction paths", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: undefined });
+    const s1 = m.getOrCreate("ctx-1");
+    m.startCleanup(500, 0);
+    vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1000);
+    m.stopCleanup();
+    expect(m.getOrCreate("ctx-1")).toBe(s1);
   });
 });
