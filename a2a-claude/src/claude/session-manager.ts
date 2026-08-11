@@ -105,6 +105,10 @@ export class SessionManager {
   }
 
   startCleanup(interval: number, ttl: number): void {
+    if (ttl <= 0) {
+      log.info("Session expiry disabled (ttl <= 0); sessions are retained until shutdown");
+      return;
+    }
     if (interval <= 0) return;
     this.cleanupTimer = setInterval(() => {
       const now = Date.now();

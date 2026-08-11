@@ -86,4 +86,22 @@ describe("SessionManager", () => {
     expect(m.getOrCreate("ctx-stale")).not.toBe(stale); // was cleaned
     expect(m.getOrCreate("ctx-busy")).toBe(busy);       // was preserved
   });
+
+  it("does not evict during cleanup when ttl is 0", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 0 });
+    const s1 = m.getOrCreate("ctx-1");
+    m.startCleanup(500, 0);
+    vi.advanceTimersByTime(60_000);
+    m.stopCleanup();
+    expect(m.getOrCreate("ctx-1")).toBe(s1);
+  });
+
+  it("installs no cleanup timer when ttl is 0", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 0 });
+    m.startCleanup(500, 0);
+    expect(vi.getTimerCount()).toBe(0);
+    m.stopCleanup();
+  });
 });
