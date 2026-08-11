@@ -126,6 +126,9 @@
         "memory": {
           "$ref": "#/definitions/MemoryConfig"
         },
+        "rateLimit": {
+          "$ref": "#/definitions/RateLimitConfig"
+        },
         "server": {
           "$ref": "#/definitions/ServerConfig"
         },
@@ -412,6 +415,10 @@
           "description": "Publish file change metadata as sideband events. Default: true.",
           "type": "boolean"
         },
+        "emitRateLimitEvents": {
+          "description": "Publish rate-limit status changes as sideband events. Default: true.",
+          "type": "boolean"
+        },
         "emitThinkingEvents": {
           "description": "Publish thinking summaries as sideband events. Default: true.",
           "type": "boolean"
@@ -564,6 +571,21 @@
             "type": "string"
           },
           "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RateLimitConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "taskState": {
+          "description": "A2A task state published when a rate limit ends a turn. Non-terminal states leave the task open so the client can continue it after the reset (default: \"input-required\").",
+          "enum": [
+            "input-required",
+            "failed",
+            "auth-required"
+          ],
+          "type": "string"
         }
       },
       "type": "object"
