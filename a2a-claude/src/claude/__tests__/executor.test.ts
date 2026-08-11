@@ -246,15 +246,16 @@ describe("ClaudeExecutor validation", () => {
     }
   });
 
-  it("starts session cleanup with expiry disabled when ttl is unset", async () => {
+  it("starts session cleanup with expiry and sweep disabled when both are unset", async () => {
     const spy = vi.spyOn(SessionManager.prototype, "startCleanup");
     try {
       delete (config.session as { ttl?: number }).ttl;
+      delete (config.session as { cleanupInterval?: number }).cleanupInterval;
       const ex = new ClaudeExecutor(config, () => new FakeClaudeClient([happyTurn("s", "x")]));
 
       await ex.initialize();
 
-      expect(spy).toHaveBeenCalledWith(300_000, 0);
+      expect(spy).toHaveBeenCalledWith(0, 0);
     } finally {
       spy.mockRestore();
     }

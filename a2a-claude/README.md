@@ -176,8 +176,7 @@ Two more things worth knowing:
 
   "session": {
     "reuseByContext": true,
-    "ttl": 0,
-    "cleanupInterval": 300000
+    "ttl": 0
   },
 
   "features": {
@@ -221,6 +220,14 @@ its last — so an active conversation is reset on a fixed schedule rather than
 after a period of inactivity. When a session is evicted, the next turn on that
 `contextId` starts a brand-new Claude session with no memory of the conversation
 so far.
+
+`session.cleanupInterval` is a background sweep that reclaims expired sessions
+without waiting for their context to be used again. It also defaults to `0`
+(disabled), and it is only consulted at all when `ttl > 0` — with expiry off
+there is nothing to sweep. Setting `ttl` alone gives you expiry via the lazy
+check, but a context that is never touched again holds its record until the
+process exits; set `cleanupInterval` as well if you want that memory reclaimed.
+Both disabled states are logged at startup.
 
 ### Permission modes
 

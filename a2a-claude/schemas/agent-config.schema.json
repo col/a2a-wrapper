@@ -463,7 +463,7 @@
       "description": "Session lifecycle management.",
       "properties": {
         "cleanupInterval": {
-          "description": "Session cleanup interval in ms (default: 300_000 = 5 min). Only runs when ttl > 0.",
+          "description": "How often the background sweep reclaims expired sessions, in ms. Only ever runs when ttl > 0; 0 or less disables it, leaving expiry to the lazy check in getOrCreate (default: 0).",
           "type": "number"
         },
         "reuseByContext": {

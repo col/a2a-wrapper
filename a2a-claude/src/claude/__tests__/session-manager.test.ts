@@ -105,6 +105,25 @@ describe("SessionManager", () => {
     m.stopCleanup();
   });
 
+  it("installs no cleanup timer when the sweep is disabled but ttl is set", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 1000, cleanupInterval: 0 });
+    m.startCleanup(0, 1000);
+    expect(vi.getTimerCount()).toBe(0);
+    m.stopCleanup();
+  });
+
+  it("still expires lazily when the sweep is disabled", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 1000, cleanupInterval: 0 });
+    const s1 = m.getOrCreate("ctx-1");
+    m.startCleanup(0, 1000);
+    vi.advanceTimersByTime(1500);
+    m.stopCleanup();
+    // No sweep ran, but getOrCreate's own age check must still evict.
+    expect(m.getOrCreate("ctx-1")).not.toBe(s1);
+  });
+
   it("treats an unset ttl as disabled in both eviction paths", () => {
     vi.useFakeTimers();
     const m = mgr({ ttl: undefined });
