@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveConfig } from "../loader.js";
+import { DEFAULTS } from "../defaults.js";
 
 describe("resolveConfig", () => {
   let dir: string;
@@ -166,5 +167,11 @@ describe("resolveConfig", () => {
     const source = cfg.claude.marketplaces!.mk.source;
     expect(source.ref).toBe("v9.9.9");
     expect(source.token).toBe("ghp_secret");
+  });
+});
+
+describe("session defaults", () => {
+  it("disables session expiry by default", () => {
+    expect(DEFAULTS.session.ttl).toBe(0);
   });
 });

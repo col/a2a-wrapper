@@ -38,7 +38,7 @@ export const DEFAULTS: Required<AgentConfig> = {
   },
   session: {
     reuseByContext: true,
-    ttl: 3_600_000,
+    ttl: 0,
     cleanupInterval: 300_000,
   },
   features: {

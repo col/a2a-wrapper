@@ -144,9 +144,13 @@ export interface SessionConfig {
   titlePrefix?: string;
   /** Reuse sessions by A2A contextId (default: true) */
   reuseByContext?: boolean;
-  /** Session TTL in ms (default: 3_600_000 = 1 hour) */
+  /**
+   * Session idle TTL in ms. 0 or less disables session expiry entirely, so a
+   * contextId keeps resuming the same Claude session indefinitely.
+   * @default 0
+   */
   ttl?: number;
-  /** Session cleanup interval in ms (default: 300_000 = 5 min) */
+  /** Session cleanup interval in ms. Only runs when ttl > 0. @default 300_000 */
   cleanupInterval?: number;
 }
 
