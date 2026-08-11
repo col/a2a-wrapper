@@ -178,6 +178,10 @@
           "$ref": "#/definitions/TimeoutConfig",
           "description": "Timeout settings"
         },
+        "rateLimit": {
+          "$ref": "#/definitions/RateLimitConfig",
+          "description": "Behaviour when a Claude rate limit ends a turn."
+        },
         "logging": {
           "$ref": "#/definitions/LoggingConfig",
           "description": "Logging settings"
@@ -254,6 +258,10 @@
       "properties": {
         "streamArtifactChunks": {
           "description": "Stream artifact chunks individually (A2A spec-correct) vs buffer and send single artifact (inspector-compatible). Default: false (buffered).",
+          "type": "boolean"
+        },
+        "emitRateLimitEvents": {
+          "description": "Publish rate-limit status changes as sideband events. Default: true.",
           "type": "boolean"
         },
         "emitThinkingEvents": {
@@ -404,6 +412,21 @@
             "type": "string"
           },
           "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RateLimitConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "taskState": {
+          "description": "A2A task state published when a rate limit ends a turn. Non-terminal states leave the task open so the client can continue it after the reset (default: \"input-required\").",
+          "enum": [
+            "input-required",
+            "failed",
+            "auth-required"
+          ],
+          "type": "string"
         }
       },
       "type": "object"
