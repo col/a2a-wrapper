@@ -14,6 +14,7 @@
 import type { AgentEventEmitter } from "@a2a-wrapper/core";
 import type { AgentConfig } from "../config/types.js";
 import type { SDKMessageLike } from "./client-factory.js";
+import type { RateLimitVerdict } from "./rate-limit-tracker.js";
 import { logger } from "../utils/logger.js";
 
 const log = logger.child("event-mapper");
@@ -107,6 +108,31 @@ export class EventMapper {
     } catch (err) {
       log.warn("EventMapper.handleMessage error", { error: (err as Error).message, type: msg.type });
     }
+  }
+
+  /**
+   * Emit a rate-limit sideband event. Called by the executor with the tracker's
+   * verdict rather than re-parsing the message, so detection rules live in
+   * exactly one place.
+   */
+  handleRateLimit(verdict: RateLimitVerdict): void {
+    if (verdict.kind === "none") return;
+    if (!this.config.features.emitRateLimitEvents) return;
+
+    const { snapshot } = verdict;
+    const action =
+      verdict.kind === "rejected" ? "ended_turn"
+        : snapshot.source === "api_retry" ? "retrying"
+          : "warning";
+
+    this.emitter.emit("rate_limit", {
+      backend: "claude",
+      status: snapshot.status,
+      action,
+      ...(snapshot.rateLimitType !== undefined ? { rateLimitType: snapshot.rateLimitType } : {}),
+      ...(snapshot.resetsAt !== undefined ? { resetsAt: snapshot.resetsAt } : {}),
+      ...(snapshot.utilization !== undefined ? { utilization: snapshot.utilization } : {}),
+    });
   }
 
   private handleSystem(msg: SDKMessageLike): void {
