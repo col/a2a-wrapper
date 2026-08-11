@@ -175,6 +175,10 @@ describe("session defaults", () => {
     expect(DEFAULTS.session.ttl).toBe(0);
   });
 
+  it("disables the cleanup sweep by default", () => {
+    expect(DEFAULTS.session.cleanupInterval).toBe(0);
+  });
+
   it("resolves ttl to 0 when a config file omits session.ttl", () => {
     const dir = mkdtempSync(join(tmpdir(), "a2a-claude-test-"));
     try {

@@ -151,7 +151,14 @@ export interface SessionConfig {
    * @default 0
    */
   ttl?: number;
-  /** Session cleanup interval in ms. Only runs when ttl > 0. @default 300_000 */
+  /**
+   * How often the background sweep reclaims expired sessions, in ms. The sweep
+   * only ever runs when `ttl > 0`; 0 or less disables it, leaving expiry to the
+   * lazy check in `getOrCreate`. Defaults to 0 to match `ttl` — set both if you
+   * want expired sessions reclaimed without waiting for the context to be
+   * looked up again.
+   * @default 0
+   */
   cleanupInterval?: number;
 }
 

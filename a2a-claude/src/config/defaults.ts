@@ -39,7 +39,7 @@ export const DEFAULTS: Required<AgentConfig> = {
   session: {
     reuseByContext: true,
     ttl: 0,
-    cleanupInterval: 300_000,
+    cleanupInterval: 0,
   },
   features: {
     streamArtifactChunks: false,

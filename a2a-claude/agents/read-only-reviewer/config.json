@@ -41,8 +41,7 @@
   },
   "session": {
     "reuseByContext": true,
-    "ttl": 0,
-    "cleanupInterval": 300000
+    "ttl": 0
   },
   "features": {
     "streamArtifactChunks": false,
