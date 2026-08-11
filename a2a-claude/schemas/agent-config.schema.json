@@ -440,7 +440,7 @@
       "description": "Session lifecycle management.",
       "properties": {
         "cleanupInterval": {
-          "description": "Session cleanup interval in ms (default: 300_000 = 5 min)",
+          "description": "Session cleanup interval in ms (default: 300_000 = 5 min). Only runs when ttl > 0.",
           "type": "number"
         },
         "reuseByContext": {
@@ -452,7 +452,7 @@
           "type": "string"
         },
         "ttl": {
-          "description": "Session TTL in ms (default: 3_600_000 = 1 hour)",
+          "description": "Session idle TTL in ms. 0 or less disables expiry entirely (default: 0 — sessions never expire).",
           "type": "number"
         }
       },
