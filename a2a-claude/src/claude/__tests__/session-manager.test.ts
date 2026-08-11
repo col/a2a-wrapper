@@ -37,6 +37,25 @@ describe("SessionManager", () => {
     expect(s2).not.toBe(s1);
   });
 
+  it("never expires sessions when ttl is 0", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: 0 });
+    const s1 = m.getOrCreate("ctx-1");
+    s1.sessionId = "sess-abc";
+    vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1000); // one week
+    const s2 = m.getOrCreate("ctx-1");
+    expect(s2).toBe(s1);
+    expect(s2.sessionId).toBe("sess-abc");
+  });
+
+  it("treats a negative ttl as disabled", () => {
+    vi.useFakeTimers();
+    const m = mgr({ ttl: -1 });
+    const s1 = m.getOrCreate("ctx-1");
+    vi.advanceTimersByTime(86_400_000);
+    expect(m.getOrCreate("ctx-1")).toBe(s1);
+  });
+
   it("tracks, retrieves, and untracks executions", () => {
     const m = mgr();
     const ac = new AbortController();
