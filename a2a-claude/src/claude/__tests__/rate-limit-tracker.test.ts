@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RateLimitTracker } from "../rate-limit-tracker.js";
+import { RateLimitTracker, renderRateLimitMessage, rateLimitMetadata } from "../rate-limit-tracker.js";
 import type { SDKMessageLike } from "../client-factory.js";
 
 function limitEvent(info: Record<string, unknown>): SDKMessageLike {
@@ -100,5 +100,64 @@ describe("RateLimitTracker", () => {
     ]) {
       expect(t.observe(msg).kind).toBe("none");
     }
+  });
+});
+
+describe("renderRateLimitMessage", () => {
+  const base = { status: "rejected", source: "rate_limit_event" } as const;
+
+  it("names the limit type and the reset time", () => {
+    const msg = renderRateLimitMessage(
+      { ...base, rateLimitType: "five_hour", resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0) },
+      "input-required",
+    );
+    expect(msg).toBe(
+      "Rate limit reached (5-hour limit). Resets at 2026-08-11T18:00:00.000Z. " +
+      "Send another message on this task to continue.",
+    );
+  });
+
+  it("omits the reset clause when no reset time is known", () => {
+    const msg = renderRateLimitMessage({ ...base, rateLimitType: "seven_day" }, "input-required");
+    expect(msg).toBe("Rate limit reached (7-day limit). Send another message on this task to continue.");
+  });
+
+  it("omits the parenthetical for an unknown or absent limit type", () => {
+    expect(renderRateLimitMessage(base, "input-required")).toBe(
+      "Rate limit reached. Send another message on this task to continue.",
+    );
+    expect(renderRateLimitMessage({ ...base, rateLimitType: "novel_limit" }, "input-required")).toBe(
+      "Rate limit reached. Send another message on this task to continue.",
+    );
+  });
+
+  it("tells the client to use the same contextId when the task state is terminal", () => {
+    const msg = renderRateLimitMessage({ ...base, rateLimitType: "five_hour" }, "failed");
+    expect(msg).toBe(
+      "Rate limit reached (5-hour limit). Retry on the same contextId to continue this conversation.",
+    );
+  });
+});
+
+describe("rateLimitMetadata", () => {
+  it("carries the structured fields plus both reset representations", () => {
+    const meta = rateLimitMetadata({
+      status: "rejected", source: "rate_limit_event",
+      rateLimitType: "five_hour", resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0), utilization: 1,
+    });
+    expect(meta).toEqual({
+      reason: "rate_limit",
+      source: "rate_limit_event",
+      rateLimitType: "five_hour",
+      resetsAt: Date.UTC(2026, 7, 11, 18, 0, 0),
+      resetsAtIso: "2026-08-11T18:00:00.000Z",
+      utilization: 1,
+    });
+  });
+
+  it("omits absent fields rather than emitting undefined keys", () => {
+    const meta = rateLimitMetadata({ status: "rejected", source: "assistant_error" });
+    expect(meta).toEqual({ reason: "rate_limit", source: "assistant_error" });
+    expect(Object.keys(meta)).not.toContain("resetsAt");
   });
 });
