@@ -190,6 +190,62 @@ describe("EventMapper", () => {
   });
 });
 
+describe("EventMapper.handleRateLimit", () => {
+  it("emits ended_turn for a rejection", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleRateLimit({
+      kind: "rejected",
+      snapshot: {
+        status: "rejected", source: "rate_limit_event",
+        rateLimitType: "five_hour", resetsAt: 1_775_000_000_000, utilization: 1,
+      },
+    });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].event).toBe("rate_limit");
+    expect(emitted[0].data).toMatchObject({
+      backend: "claude", status: "rejected", action: "ended_turn",
+      rateLimitType: "five_hour", resetsAt: 1_775_000_000_000, utilization: 1,
+    });
+  });
+
+  it("emits retrying for an api_retry warning and warning for a limit warning", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleRateLimit({
+      kind: "warning",
+      snapshot: { status: "allowed_warning", source: "api_retry" },
+    });
+    mapper.handleRateLimit({
+      kind: "warning",
+      snapshot: { status: "allowed_warning", source: "rate_limit_event", utilization: 0.9 },
+    });
+    expect(emitted.map((e) => e.data.action)).toEqual(["retrying", "warning"]);
+  });
+
+  it("emits nothing for a none verdict", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleRateLimit({ kind: "none" });
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("emits nothing when emitRateLimitEvents is disabled", () => {
+    const { mapper, emitted } = makeMapper({ emitRateLimitEvents: false });
+    mapper.handleRateLimit({
+      kind: "rejected",
+      snapshot: { status: "rejected", source: "rate_limit_event" },
+    });
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("omits absent optional fields", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleRateLimit({
+      kind: "rejected",
+      snapshot: { status: "rejected", source: "assistant_error" },
+    });
+    expect(Object.keys(emitted[0].data)).toEqual(["backend", "status", "action"]);
+  });
+});
+
 describe("sanitizeMessage", () => {
   it("redacts key=value secret patterns and truncates", () => {
     const out = sanitizeMessage("failed with api_key=sk-123 token: abc " + "z".repeat(3000));

@@ -53,7 +53,8 @@ export type EventType =
   | "agent_started"
   | "agent_finished"
   | "agent_error"
-  | "context_window";
+  | "context_window"
+  | "rate_limit";
 
 /**
  * A single agent event carrying structured trace data.
