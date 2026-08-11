@@ -8,19 +8,12 @@ import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig } from "../../config/types.js";
 import type { SDKMessageLike } from "../client-factory.js";
 import type { RequestContext, ExecutionEventBus } from "@a2a-js/sdk/server";
-import { TaskState } from "@a2a-js/sdk";
 import type { AgentEvent } from "@a2a-wrapper/core";
 
-const STATE_NAME: Partial<Record<TaskState, string>> = {
-  [TaskState.TASK_STATE_SUBMITTED]: "submitted",
-  [TaskState.TASK_STATE_WORKING]: "working",
-  [TaskState.TASK_STATE_INPUT_REQUIRED]: "input-required",
-  [TaskState.TASK_STATE_COMPLETED]: "completed",
-  [TaskState.TASK_STATE_FAILED]: "failed",
-  [TaskState.TASK_STATE_AUTH_REQUIRED]: "auth-required",
-};
-
-interface PublishedEvent { kind?: string; data?: Record<string, unknown>; [k: string]: unknown }
+// A2A v0.3 wire shapes: the bus receives the event object itself (no {kind,data}
+// envelope), `status.state` is the lowercase-hyphen string, and a text part is
+// `{ kind: "text", text }`. See event-publisher.ts in core.
+interface PublishedEvent { kind?: string; status?: { state?: string; message?: unknown }; [k: string]: unknown }
 
 function makeBus() {
   const events: PublishedEvent[] = [];
@@ -37,34 +30,29 @@ function makeCtx(taskId: string, contextId: string): RequestContext {
   return {
     taskId, contextId, task: undefined,
     userMessage: {
-      messageId: "m1", contextId, taskId, role: 1,
-      parts: [{ content: { $case: "text", value: "do the thing" }, metadata: undefined }],
-      metadata: undefined, extensions: [], referenceTaskIds: [],
+      kind: "message", messageId: "m1", role: "user",
+      parts: [{ kind: "text", text: "do the thing" }],
     },
   } as unknown as RequestContext;
 }
 
 function states(events: PublishedEvent[]): string[] {
   return events
-    .filter((e) => e.kind === "statusUpdate")
-    .map((e) => STATE_NAME[(e.data?.status as { state?: TaskState })?.state as TaskState] ?? "");
+    .filter((e) => e.kind === "status-update")
+    .map((e) => e.status?.state ?? "");
 }
 
-function terminalStatus(events: PublishedEvent[]): Record<string, unknown> {
-  const updates = events.filter((e) => e.kind === "statusUpdate");
-  return updates[updates.length - 1]!.data as Record<string, unknown>;
+function terminalStatus(events: PublishedEvent[]): PublishedEvent {
+  const updates = events.filter((e) => e.kind === "status-update");
+  return updates[updates.length - 1]!;
 }
 
-/**
- * A2A v1.0 wraps a text part as `{ content: { $case: "text", value } }` rather
- * than the v0.3 `{ text }` — see event-publisher.ts's module doc in core.
- */
 function statusText(events: PublishedEvent[]): string {
   const status = terminalStatus(events).status as {
-    message?: { parts?: Array<{ content?: { $case?: string; value?: string } }> };
+    message?: { parts?: Array<{ kind?: string; text?: string }> };
   };
-  const part = status?.message?.parts?.[0]?.content;
-  return part?.$case === "text" ? part.value ?? "" : "";
+  const part = status?.message?.parts?.[0];
+  return part?.kind === "text" ? part.text ?? "" : "";
 }
 
 /**
@@ -156,7 +144,7 @@ describe("ClaudeExecutor rate limit handling", () => {
 
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
 
-    expect(events.filter((e) => e.kind === "artifactUpdate")).toHaveLength(0);
+    expect(events.filter((e) => e.kind === "artifact-update")).toHaveLength(0);
   });
 
   it("keeps the session resumable on the next turn", async () => {
@@ -258,8 +246,8 @@ describe("ClaudeExecutor rate limit handling", () => {
 
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
 
-    const artifacts = events.filter((e) => e.kind === "artifactUpdate");
+    const artifacts = events.filter((e) => e.kind === "artifact-update");
     expect(artifacts.length).toBeGreaterThan(1);
-    expect(artifacts[artifacts.length - 1].data).toMatchObject({ lastChunk: true });
+    expect(artifacts[artifacts.length - 1]).toMatchObject({ lastChunk: true });
   });
 });
