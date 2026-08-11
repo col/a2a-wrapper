@@ -20,6 +20,12 @@ import { createClaudeClient, buildQueryOptions } from "./client-factory.js";
 import type { ClaudeClientLike, SDKMessageLike } from "./client-factory.js";
 import { SessionManager } from "./session-manager.js";
 import { EventMapper, sanitizeMessage } from "./event-mapper.js";
+import {
+  RateLimitTracker,
+  renderRateLimitMessage,
+  rateLimitMetadata,
+} from "./rate-limit-tracker.js";
+import type { RateLimitSnapshot } from "./rate-limit-tracker.js";
 import { validateMcpServers, toClaudeMcpEntry } from "./mcp-adapter.js";
 import { CLAUDE_BACKEND_PATHS } from "./backend-paths.js";
 import { extractUserText } from "./prompt-builder.js";
@@ -44,6 +50,7 @@ const log = logger.child("executor");
 const VALID_PERMISSION_MODES = new Set(["acceptEdits", "dontAsk", "plan", "bypassPermissions"]);
 const VALID_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const VALID_THINKING_TYPES = new Set(["adaptive", "enabled", "disabled"]);
+const VALID_RATE_LIMIT_TASK_STATES = new Set(["input-required", "failed", "auth-required"]);
 
 export class ClaudeExecutor implements AgentExecutor {
   private readonly config: Required<AgentConfig>;
@@ -263,6 +270,42 @@ export class ClaudeExecutor implements AgentExecutor {
               }, promptTimeout)
             : null;
 
+        // Hoisted above the try: `break` inside `for await` awaits
+        // iterator.return(), and a rejection there lands in the catch block,
+        // which must still be able to see a rate limit we already detected.
+        let rateLimited: RateLimitSnapshot | null = null;
+        let finalText = "";
+        let streamArtifactStarted = false;
+        const streamArtifactId = `response-${taskId}`;
+        const streaming = this.config.features.streamArtifactChunks === true;
+
+        /** Single definition of the rate-limit ending, used by both paths. */
+        const endTurnRateLimited = (snapshot: RateLimitSnapshot): void => {
+          // Tear down the subprocess — same break-then-abort teardown the
+          // plugin preflight uses. Waiting out a reset is never our call.
+          // `query.interrupt()` (which cancelTask also calls) is not needed
+          // here: the `break` already closed the iterator, so there is no
+          // in-flight consumer left to interrupt, and abort() is what actually
+          // stops the subprocess.
+          abortController.abort();
+
+          // Already-sent chunks would otherwise leave the client's artifact
+          // open forever. This closes the stream; finalText is intentionally
+          // "" here, since no success result arrives on this path.
+          if (streaming && streamArtifactStarted) {
+            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
+          }
+
+          const taskState = this.config.rateLimit.taskState ?? "input-required";
+          publishStatus(
+            bus, taskId, contextId, taskState,
+            renderRateLimitMessage(snapshot, taskState),
+            true,
+            rateLimitMetadata(snapshot),
+          );
+          bus.finished();
+        };
+
         try {
           publishStatus(bus, taskId, contextId, "working", "Processing request...");
 
@@ -273,13 +316,17 @@ export class ClaudeExecutor implements AgentExecutor {
           const q = this.client!.runQuery(promptText, options);
           this.sessionManager!.attachQuery(taskId, q);
 
-          let finalText = "";
           let resultError: string | null = null;
-          const streamArtifactId = `response-${taskId}`;
-          let streamArtifactStarted = false;
-          const streaming = this.config.features.streamArtifactChunks === true;
+          const rateLimits = new RateLimitTracker();
 
           for await (const msg of q as AsyncIterable<SDKMessageLike>) {
+            const verdict = rateLimits.observe(msg);
+            if (verdict.kind !== "none") mapper.handleRateLimit(verdict);
+            if (verdict.kind === "rejected") {
+              rateLimited = verdict.snapshot;
+              break;
+            }
+
             if (msg.type === "system" && msg.subtype === "init" && session.sessionId === null) {
               if (typeof msg.session_id === "string") session.sessionId = msg.session_id;
             }
@@ -316,6 +363,11 @@ export class ClaudeExecutor implements AgentExecutor {
             mapper.handleMessage(msg);
           }
 
+          if (rateLimited) {
+            endTurnRateLimited(rateLimited);
+            return;
+          }
+
           if (resultError) {
             publishStatus(bus, taskId, contextId, "failed", sanitizeMessage(resultError), true);
             bus.finished();
@@ -331,6 +383,20 @@ export class ClaudeExecutor implements AgentExecutor {
           publishStatus(bus, taskId, contextId, "completed", undefined, true);
           bus.finished();
         } catch (err) {
+          // A detected rate limit outranks whatever the teardown threw: the
+          // `break` above awaits iterator.return(), so a failing teardown would
+          // otherwise discard the real reason this turn ended — and a teardown
+          // error whose text merely contains "abort" would fall into the
+          // silent branch below, leaving the task open with no terminal event.
+          if (rateLimited) {
+            log.info("Rate limit ended the turn; ignoring teardown error", {
+              taskId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            endTurnRateLimited(rateLimited);
+            return;
+          }
+
           const isAbort =
             err instanceof Error &&
             (err.name === "AbortError" || err.message.includes("abort") || err.message.includes("canceled"));
@@ -523,6 +589,14 @@ export class ClaudeExecutor implements AgentExecutor {
       log.warn("settingSources is non-empty — host/project settings files will be loaded.", {
         settingSources: claude.settingSources,
       });
+    }
+
+    const rateLimitState = this.config.rateLimit?.taskState;
+    if (rateLimitState !== undefined && !VALID_RATE_LIMIT_TASK_STATES.has(rateLimitState)) {
+      throw new Error(
+        `rateLimit.taskState "${String(rateLimitState)}" is invalid. ` +
+        "Use one of: input-required, failed, auth-required.",
+      );
     }
   }
 

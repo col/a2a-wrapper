@@ -190,7 +190,12 @@ Two more things worth knowing:
     "emitThinkingEvents": true,
     "emitToolEvents": true,
     "emitFileChangeEvents": true,
-    "emitTodoEvents": true
+    "emitTodoEvents": true,
+    "emitRateLimitEvents": true
+  },
+
+  "rateLimit": {
+    "taskState": "input-required"
   },
 
   "timeouts": {
@@ -288,6 +293,63 @@ The check diffs the session init message's plugin list, **not** the `plugin_inst
 
 The preflight has no timeout of its own: the SDK already bounds marketplace fetches (an unreachable host fails in ~75s), and the session still reaches init afterwards, so a fetch failure surfaces as the precise "did not load" error above rather than a generic timeout. Tune `CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS` or `CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS` if you need different bounds.
 
+### Rate limits
+
+When Claude reports a rate-limit rejection, the wrapper ends the turn
+immediately rather than waiting out the reset or letting the request decay into
+a prompt timeout. It publishes an `input-required` status whose message names
+the limit and its reset time, for example:
+
+> Rate limit reached (5-hour limit). Resets at 2026-08-11T18:00:00.000Z. Send
+> another message on this task to continue.
+
+The same status carries machine-readable metadata for orchestrators that
+schedule their own retry:
+
+```json
+{
+  "reason": "rate_limit",
+  "source": "rate_limit_event",
+  "rateLimitType": "five_hour",
+  "resetsAt": 1786471200000,
+  "resetsAtIso": "2026-08-11T18:00:00.000Z",
+  "utilization": 1
+}
+```
+
+Because the task stays non-terminal, the client continues the same conversation
+by sending another message on the same task once the limit resets — the Claude
+session is resumed, so no context is lost. Set `rateLimit.taskState` to
+`"failed"` if your A2A client cannot handle a non-terminal task; the message
+then tells the client to retry on the same `contextId` instead.
+
+Rate limit details (`resetsAt`, `rateLimitType`) are only available under
+claude.ai subscription auth. Under API key, Bedrock, or Vertex the wrapper still
+ends the turn cleanly, but the message omits the reset time because the SDK does
+not report one. Details are never invented: a limit type or reset time is
+carried onto a later rejection only if the SDK had already reported that limit
+under pressure, and a reset time that is not in the future is dropped rather
+than printed.
+
+A rejection whose overage window is still open (`overageStatus` of `allowed` or
+`allowed_warning`) is treated as a warning, not a rejection — the request may
+well proceed on overage credits, and if it does not, the assistant's own
+`rate_limit` error still ends the turn. When the SDK reports
+`errorCode: "credits_required"`, no reset will restore capacity, so the message
+says additional credits are required and omits the reset clause entirely.
+
+Warnings — approaching a limit, or an internal retry after a 429 — do not end
+the turn. They surface as `rate_limit` sideband events, which can be disabled
+with `features.emitRateLimitEvents: false`; that flag only suppresses the
+sideband events, and the turn still ends on a rejection either way.
+
+The SDK retries 429s internally before giving up, and the wrapper does not
+shorten that: those retries still run to exhaustion inside the same
+`timeouts.prompt` window. They are at least visible now, as `rate_limit`
+sideband events with `action: "retrying"` carrying the SDK's `attempt`,
+`maxRetries`, and `delayMs`. Set a lower `timeouts.prompt` if a retry storm
+burning the window matters more to you than the retries succeeding.
+
 ## Example Agents
 
 | Config | Port | Permission mode | Description |
@@ -365,6 +427,7 @@ Sideband events are published through `AgentEventEmitter` for every Claude Agent
 | `decision` (`kind: "permission_denied"`) | SDK `system`/`permission_denied` message | Tool name + sanitized message |
 | `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns` |
 | `agent_error` | SDK `result` failure subtypes / `error` message | Sanitized error message; reason mapped from the SDK's failure subtype (e.g. max turns, max budget) |
+| `rate_limit` | SDK `rate_limit_event`, `system`/`api_retry` with `error: "rate_limit"`, or an assistant `rate_limit` error | `action` is `"ended_turn"` (rejection — the turn stops), `"retrying"` (SDK internal retry, with the `retry` counters), or `"warning"`; carries `status` plus `rateLimitType` / `resetsAt` / `utilization` when the SDK reports them. Controlled by `features.emitRateLimitEvents` |
 
 ## Docker
 

@@ -41,12 +41,16 @@ export const DEFAULTS: Required<AgentConfig> = {
     ttl: 0,
     cleanupInterval: 0,
   },
+  rateLimit: {
+    taskState: "input-required",
+  },
   features: {
     streamArtifactChunks: false,
     emitThinkingEvents: true,
     emitToolEvents: true,
     emitFileChangeEvents: true,
     emitTodoEvents: true,
+    emitRateLimitEvents: true,
   },
   timeouts: {
     prompt: 600_000,
