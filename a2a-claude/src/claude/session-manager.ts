@@ -42,14 +42,14 @@ export class SessionManager {
 
   getOrCreate(contextId: string): ClaudeSession {
     const sessionCfg = this.config.session;
-    const ttl = sessionCfg.ttl ?? 3_600_000;
+    const ttl = sessionCfg.ttl ?? 0;
     const reuse = sessionCfg.reuseByContext ?? true;
 
     if (reuse && contextId) {
       const existing = this.sessions.get(contextId);
       if (existing) {
         const age = Date.now() - existing.createdAt;
-        if (age < ttl) {
+        if (ttl <= 0 || age < ttl) {
           existing.lastAccessedAt = Date.now();
           log.debug("Reusing Claude session", { contextId, sessionId: existing.sessionId });
           return existing;
