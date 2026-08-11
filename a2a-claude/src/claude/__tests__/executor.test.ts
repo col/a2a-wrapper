@@ -163,6 +163,28 @@ describe("ClaudeExecutor.execute", () => {
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
     expect(states(events)).toContain("failed");
   });
+
+  it("does not time out when the prompt timeout is 0", async () => {
+    config.timeouts = { prompt: 0 };
+    const client = new FakeClaudeClient([{ ...happyTurn("s1", "done"), delayMs: 30 }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+    expect(states(events)).toContain("completed");
+    expect(states(events)).not.toContain("failed");
+  });
+
+  it("does not time out when the prompt timeout is negative", async () => {
+    config.timeouts = { prompt: -1 };
+    const client = new FakeClaudeClient([{ ...happyTurn("s1", "done"), delayMs: 30 }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+    expect(states(events)).toContain("completed");
+    expect(states(events)).not.toContain("failed");
+  });
 });
 
 describe("ClaudeExecutor.cancelTask", () => {
