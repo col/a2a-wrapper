@@ -20,6 +20,12 @@ import { createClaudeClient, buildQueryOptions } from "./client-factory.js";
 import type { ClaudeClientLike, SDKMessageLike } from "./client-factory.js";
 import { SessionManager } from "./session-manager.js";
 import { EventMapper, sanitizeMessage } from "./event-mapper.js";
+import {
+  RateLimitTracker,
+  renderRateLimitMessage,
+  rateLimitMetadata,
+} from "./rate-limit-tracker.js";
+import type { RateLimitSnapshot } from "./rate-limit-tracker.js";
 import { validateMcpServers, toClaudeMcpEntry } from "./mcp-adapter.js";
 import { CLAUDE_BACKEND_PATHS } from "./backend-paths.js";
 import { extractUserText } from "./prompt-builder.js";
@@ -276,11 +282,20 @@ export class ClaudeExecutor implements AgentExecutor {
 
           let finalText = "";
           let resultError: string | null = null;
+          const rateLimits = new RateLimitTracker();
+          let rateLimited: RateLimitSnapshot | null = null;
           const streamArtifactId = `response-${taskId}`;
           let streamArtifactStarted = false;
           const streaming = this.config.features.streamArtifactChunks === true;
 
           for await (const msg of q as AsyncIterable<SDKMessageLike>) {
+            const verdict = rateLimits.observe(msg);
+            if (verdict.kind !== "none") mapper.handleRateLimit(verdict);
+            if (verdict.kind === "rejected") {
+              rateLimited = verdict.snapshot;
+              break;
+            }
+
             if (msg.type === "system" && msg.subtype === "init" && session.sessionId === null) {
               if (typeof msg.session_id === "string") session.sessionId = msg.session_id;
             }
@@ -315,6 +330,29 @@ export class ClaudeExecutor implements AgentExecutor {
             }
 
             mapper.handleMessage(msg);
+          }
+
+          if (rateLimited) {
+            // Tear down the subprocess — same break-then-abort teardown the
+            // plugin preflight uses. Waiting out a reset is never our call.
+            abortController.abort();
+
+            // Already-sent chunks would otherwise leave the client's artifact
+            // open forever. This closes the stream; finalText is intentionally
+            // "" here, since no success result arrives on this path.
+            if (streaming && streamArtifactStarted) {
+              publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
+            }
+
+            const taskState = this.config.rateLimit?.taskState ?? "input-required";
+            publishStatus(
+              bus, taskId, contextId, taskState,
+              renderRateLimitMessage(rateLimited, taskState),
+              true,
+              rateLimitMetadata(rateLimited),
+            );
+            bus.finished();
+            return;
           }
 
           if (resultError) {
