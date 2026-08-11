@@ -607,7 +607,7 @@
           "type": "string"
         },
         "ttl": {
-          "description": "Session idle TTL in ms. 0 or less disables expiry entirely (default: 0 — sessions never expire).",
+          "description": "Session TTL in ms, measured from session creation — not from last use. 0 or less disables expiry entirely (default: 0 — sessions never expire).",
           "type": "number"
         }
       },
