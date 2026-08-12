@@ -165,9 +165,6 @@ export class RateLimitTracker {
   }
 }
 
-/** A2A task states this wrapper is willing to publish for a rate limit. */
-export type RateLimitTaskState = "input-required" | "failed" | "auth-required";
-
 const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   five_hour: "5-hour limit",
   seven_day: "7-day limit",
@@ -182,10 +179,7 @@ const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
  * rather than leaking a raw enum, and an unknown reset time drops the clause
  * rather than printing a fabricated one.
  */
-export function renderRateLimitMessage(
-  snapshot: RateLimitSnapshot,
-  taskState: RateLimitTaskState,
-): string {
+export function renderRateLimitMessage(snapshot: RateLimitSnapshot): string {
   // Credits exhausted is not a clock problem: no reset time will restore
   // capacity, so naming one would send the client off to wait for nothing.
   const creditsRequired = snapshot.errorCode === "credits_required";
@@ -198,12 +192,10 @@ export function renderRateLimitMessage(
     parts.push(`Resets at ${new Date(snapshot.resetsAt).toISOString()}.`);
   }
 
-  // A terminal task cannot accept another message, so the prose must not say it can.
-  parts.push(
-    taskState === "failed"
-      ? "Retry on the same contextId to continue this conversation."
-      : "Send another message on this task to continue.",
-  );
+  // The task is always terminal: the SDK cannot resume an interrupted turn, so
+  // a follow-up is a new prompt either way. Continuity comes from the contextId
+  // → Claude session mapping, not from holding the task open.
+  parts.push("Retry on the same contextId to continue this conversation.");
 
   return parts.join(" ");
 }

@@ -304,23 +304,8 @@ describe("ClaudeExecutor.buildContext", () => {
   });
 });
 
-describe("rateLimit config validation", () => {
-  it("accepts every supported task state", async () => {
-    for (const state of ["input-required", "failed", "auth-required"] as const) {
-      config.rateLimit = { taskState: state };
-      const ex = new ClaudeExecutor(config, () => new FakeClaudeClient([happyTurn("s", "x")]));
-      await expect(ex.initialize()).resolves.toBeUndefined();
-    }
-  });
-
-  it("rejects an unsupported task state", async () => {
-    config.rateLimit = { taskState: "working" as unknown as "failed" };
-    const ex = new ClaudeExecutor(config, () => new FakeClaudeClient([happyTurn("s", "x")]));
-    await expect(ex.initialize()).rejects.toThrow(/rateLimit\.taskState/);
-  });
-
-  it("defaults to input-required and enables rate-limit events", () => {
-    expect(DEFAULTS.rateLimit.taskState).toBe("input-required");
+describe("rate limit defaults", () => {
+  it("enables rate-limit sideband events", () => {
     expect(DEFAULTS.features.emitRateLimitEvents).toBe(true);
   });
 });

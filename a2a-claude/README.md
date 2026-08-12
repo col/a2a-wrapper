@@ -194,10 +194,6 @@ Two more things worth knowing:
     "emitRateLimitEvents": true
   },
 
-  "rateLimit": {
-    "taskState": "input-required"
-  },
-
   "timeouts": {
     "prompt": 600000
   },
@@ -297,11 +293,11 @@ The preflight has no timeout of its own: the SDK already bounds marketplace fetc
 
 When Claude reports a rate-limit rejection, the wrapper ends the turn
 immediately rather than waiting out the reset or letting the request decay into
-a prompt timeout. It publishes an `input-required` status whose message names
-the limit and its reset time, for example:
+a prompt timeout. The task is published as `failed`, with a message naming the
+limit and its reset time, for example:
 
-> Rate limit reached (5-hour limit). Resets at 2026-08-11T18:00:00.000Z. Send
-> another message on this task to continue.
+> Rate limit reached (5-hour limit). Resets at 2026-08-11T18:00:00.000Z. Retry
+> on the same contextId to continue this conversation.
 
 The same status carries machine-readable metadata for orchestrators that
 schedule their own retry:
@@ -317,11 +313,16 @@ schedule their own retry:
 }
 ```
 
-Because the task stays non-terminal, the client continues the same conversation
-by sending another message on the same task once the limit resets — the Claude
-session is resumed, so no context is lost. Set `rateLimit.taskState` to
-`"failed"` if your A2A client cannot handle a non-terminal task; the message
-then tells the client to retry on the same `contextId` instead.
+The task is terminal, and deliberately so. The Claude Agent SDK cannot resume an
+interrupted turn — a follow-up message is a new prompt appended to the
+conversation either way — so holding the task open with `input-required` would
+promise a continuation that never happens, and would misuse a state that means
+"I need information from you" for what is really exhausted quota.
+
+Continuity does not come from the task. It comes from the `contextId` → Claude
+session mapping, which is unaffected by how a task ends. Once the limit resets,
+the client starts a **new task on the same `contextId`**: the Claude session is
+resumed and no context is lost.
 
 Rate limit details (`resetsAt`, `rateLimitType`) are only available under
 claude.ai subscription auth. Under API key, Bedrock, or Vertex the wrapper still
