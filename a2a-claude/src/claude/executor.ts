@@ -50,6 +50,7 @@ const log = logger.child("executor");
 const VALID_PERMISSION_MODES = new Set(["acceptEdits", "dontAsk", "plan", "bypassPermissions"]);
 const VALID_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const VALID_THINKING_TYPES = new Set(["adaptive", "enabled", "disabled"]);
+const VALID_OUTPUT_FORMAT_TYPES = new Set(["json_schema"]);
 const VALID_RATE_LIMIT_TASK_STATES = new Set(["input-required", "failed", "auth-required"]);
 
 export class ClaudeExecutor implements AgentExecutor {
@@ -581,6 +582,34 @@ export class ClaudeExecutor implements AgentExecutor {
       ) {
         throw new Error(
           `claude.thinking.budgetTokens must be a positive integer (got ${JSON.stringify(thinking.budgetTokens)}).`,
+        );
+      }
+    }
+
+    // Config can arrive from an untyped JSON file, so outputFormat's shape is
+    // checked structurally rather than trusted from the type declaration.
+    const outputFormat = claude.outputFormat as
+      | { type?: unknown; schema?: unknown }
+      | undefined;
+    if (outputFormat !== undefined) {
+      if (
+        typeof outputFormat !== "object" ||
+        outputFormat === null ||
+        Array.isArray(outputFormat) ||
+        typeof outputFormat.type !== "string" ||
+        !VALID_OUTPUT_FORMAT_TYPES.has(outputFormat.type)
+      ) {
+        throw new Error(
+          'claude.outputFormat must be an object whose "type" is "json_schema".',
+        );
+      }
+      if (
+        typeof outputFormat.schema !== "object" ||
+        outputFormat.schema === null ||
+        Array.isArray(outputFormat.schema)
+      ) {
+        throw new Error(
+          "claude.outputFormat.schema must be a JSON Schema object.",
         );
       }
     }
