@@ -28,6 +28,7 @@ export interface QueryOptionsLike {
   fallbackModel?: string;
   effort?: string;
   thinking?: { type: string; budgetTokens?: number; display?: string };
+  outputFormat?: { type: string; schema: Record<string, unknown> };
   permissionMode?: string;
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -125,6 +126,7 @@ export function buildQueryOptions(
     fallbackModel: claude.fallbackModel || undefined,
     effort: claude.effort,
     thinking: resolveThinking(claude.thinking, config.features.emitThinkingEvents),
+    outputFormat: claude.outputFormat,
     permissionMode: claude.permissionMode ?? "acceptEdits",
     allowedTools: claude.allowedTools && claude.allowedTools.length > 0 ? claude.allowedTools : undefined,
     disallowedTools: claude.disallowedTools && claude.disallowedTools.length > 0 ? claude.disallowedTools : undefined,

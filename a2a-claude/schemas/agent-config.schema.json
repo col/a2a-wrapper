@@ -124,6 +124,15 @@
                 }
               ]
             },
+            "outputFormat": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "schema"],
+              "properties": {
+                "type": { "const": "json_schema" },
+                "schema": { "type": "object" }
+              }
+            },
             "permissionMode": { "enum": ["acceptEdits", "dontAsk", "plan", "bypassPermissions"] },
             "allowedTools": { "type": "array", "items": { "type": "string" } },
             "disallowedTools": { "type": "array", "items": { "type": "string" } },

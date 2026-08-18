@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeExecutor } from "../executor.js";
 import { SessionManager } from "../session-manager.js";
-import { FakeClaudeClient, happyTurn } from "./fake-client.js";
+import { FakeClaudeClient, happyTurn, structuredTurn } from "./fake-client.js";
 import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig } from "../../config/types.js";
 import type { RequestContext, ExecutionEventBus } from "@a2a-js/sdk/server";
@@ -159,6 +159,18 @@ describe("ClaudeExecutor.execute", () => {
     await ex.execute(makeCtx("t1", "ctx-1"), bus);
     expect(states(events)).toContain("completed");
     expect(states(events)).not.toContain("failed");
+  });
+
+  it("publishes structured_output as a JSON data part on the response artifact", async () => {
+    const ex = new ClaudeExecutor(config, () => new FakeClaudeClient([structuredTurn("s", "{\"answer\":\"42\"}", { answer: "42" })]));
+    await ex.initialize();
+    const { bus, events } = makeBus();
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+    const artifact = events.find((e: any) => e.kind === "artifact-update") as Record<string, unknown>;
+    const parts = (artifact.artifact as Record<string, unknown>).parts as Array<Record<string, unknown>>;
+    const dataPart = parts.find((p) => p.kind === "data");
+    expect(dataPart).toBeDefined();
+    expect(dataPart!.data).toEqual({ answer: "42" });
   });
 });
 
