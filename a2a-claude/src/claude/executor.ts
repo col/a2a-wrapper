@@ -276,6 +276,7 @@ export class ClaudeExecutor implements AgentExecutor {
         // which must still be able to see a rate limit we already detected.
         let rateLimited: RateLimitSnapshot | null = null;
         let finalText = "";
+        let structuredOutput: unknown;
         let streamArtifactStarted = false;
         const streamArtifactId = `response-${taskId}`;
         const streaming = this.config.features.streamArtifactChunks === true;
@@ -350,6 +351,7 @@ export class ClaudeExecutor implements AgentExecutor {
             if (msg.type === "result") {
               if (msg.subtype === "success" && typeof msg.result === "string") {
                 finalText = msg.result;
+                structuredOutput = msg.structured_output;
               } else if (msg.subtype !== "success") {
                 const reasons: Record<string, string> = {
                   error_max_turns: "Turn limit reached (max_turns).",
@@ -376,9 +378,9 @@ export class ClaudeExecutor implements AgentExecutor {
           }
 
           if (streaming && streamArtifactStarted) {
-            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
+            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText, structuredOutput);
           } else {
-            publishFinalArtifact(bus, taskId, contextId, finalText);
+            publishFinalArtifact(bus, taskId, contextId, finalText, structuredOutput);
           }
 
           publishStatus(bus, taskId, contextId, "completed", undefined, true);
