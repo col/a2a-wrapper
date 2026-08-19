@@ -18,6 +18,17 @@ export interface SDKMessageLike {
   [key: string]: unknown;
 }
 
+/**
+ * The one input-message shape this wrapper sends. Narrower than the SDK's
+ * `SDKUserMessage` on purpose: `uuid` and `session_id` are optional there, and
+ * everything else on it is for replay/subagent traffic we never originate.
+ */
+export interface SDKUserMessageLike {
+  type: "user";
+  parent_tool_use_id: string | null;
+  message: { role: "user"; content: string };
+}
+
 export interface QueryLike extends AsyncIterable<SDKMessageLike> {
   interrupt(): Promise<void>;
 }
@@ -50,7 +61,10 @@ export interface QueryOptionsLike {
 }
 
 export interface ClaudeClientLike {
-  runQuery(prompt: string, options: QueryOptionsLike): QueryLike;
+  runQuery(
+    prompt: string | AsyncIterable<SDKUserMessageLike>,
+    options: QueryOptionsLike,
+  ): QueryLike;
 }
 
 // ─── Option Mapping ──────────────────────────────────────────────────────────
@@ -165,8 +179,17 @@ export function buildQueryOptions(
  */
 export function createClaudeClient(_config: Required<AgentConfig>): ClaudeClientLike {
   return {
-    runQuery(prompt: string, options: QueryOptionsLike): QueryLike {
-      return query({ prompt, options: options as unknown as Options }) as unknown as QueryLike;
+    runQuery(
+      prompt: string | AsyncIterable<SDKUserMessageLike>,
+      options: QueryOptionsLike,
+    ): QueryLike {
+      // A string prompt makes the SDK close the CLI's stdin on the first result
+      // (`isSingleUserTurn`), which ends the process before any background-task
+      // wake could fire. Streaming input is what keeps that window open.
+      return query({
+        prompt: prompt as Parameters<typeof query>[0]["prompt"],
+        options: options as unknown as Options,
+      }) as unknown as QueryLike;
     },
   };
 }

@@ -2,11 +2,23 @@
  * Test fakes for ClaudeClientLike / QueryLike.
  */
 
-import type { ClaudeClientLike, QueryLike, QueryOptionsLike, SDKMessageLike } from "../client-factory.js";
+import type {
+  ClaudeClientLike,
+  QueryLike,
+  QueryOptionsLike,
+  SDKMessageLike,
+  SDKUserMessageLike,
+} from "../client-factory.js";
 
 export interface FakeCall {
-  prompt: string;
+  prompt: string | AsyncIterable<SDKUserMessageLike>;
+  /** Text of the first input message, whichever prompt form was used. */
+  promptText: string;
   options: QueryOptionsLike;
+  /** True once the executor closed its input stream. Always true for a string prompt. */
+  inputClosed: boolean;
+  /** Messages the executor pushed into the input stream. */
+  inputMessages: SDKUserMessageLike[];
 }
 
 export interface FakeTurnScript {
@@ -76,8 +88,37 @@ export class FakeClaudeClient implements ClaudeClientLike {
     this.scripts = scripts;
   }
 
-  runQuery(prompt: string, options: QueryOptionsLike): QueryLike {
-    this.calls.push({ prompt, options });
+  runQuery(
+    prompt: string | AsyncIterable<SDKUserMessageLike>,
+    options: QueryOptionsLike,
+  ): QueryLike {
+    const call: FakeCall = {
+      prompt,
+      promptText: typeof prompt === "string" ? prompt : "",
+      options,
+      inputClosed: typeof prompt === "string",
+      inputMessages: [],
+    };
+    this.calls.push(call);
+
+    // Drain the input stream the way the real SDK does, so tests can assert the
+    // executor closed it. The generator parks after its first message, so this
+    // loop stays pending until the executor resolves its deferred.
+    if (typeof prompt !== "string") {
+      void (async () => {
+        try {
+          for await (const msg of prompt) {
+            call.inputMessages.push(msg);
+            if (call.promptText === "") call.promptText = msg.message.content;
+          }
+        } catch {
+          // A rejected input stream is not something the executor should do;
+          // swallow it so an unhandled rejection cannot fail an unrelated test.
+        }
+        call.inputClosed = true;
+      })();
+    }
+
     const script = this.scripts[Math.min(this.calls.length - 1, this.scripts.length - 1)];
     const q = new FakeQuery(script, options.abortController?.signal);
     this.queries.push(q);
