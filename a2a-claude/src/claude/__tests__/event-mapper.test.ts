@@ -268,3 +268,84 @@ describe("sanitizeMessage", () => {
     expect(out.length).toBeLessThanOrEqual(2000);
   });
 });
+
+describe("EventMapper across a held-open task", () => {
+  it("emits agent_started once even when init is re-emitted on wake", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const init = { type: "system", subtype: "init", model: "claude-test" };
+    mapper.handleMessage(init);
+    mapper.handleMessage(init);
+    mapper.handleMessage(init);
+
+    expect(emitted.filter((e) => e.event === "agent_started")).toHaveLength(1);
+  });
+
+  it("suppresses agent_finished while the task is held, emitting once at the end", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0, num_turns: 1 };
+    mapper.handleResult(result, { held: true });
+    mapper.handleResult(result, { held: true });
+    mapper.handleResult(result, { held: false });
+
+    expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
+  });
+
+  it("emits agent_finished once even when two unheld results arrive", () => {
+    // The `emittedFinished` latch is what lets the executor's post-loop
+    // fallback re-emit the bookend without risking a double-fire on a normal
+    // path. Pin it directly rather than trusting the claim.
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0, num_turns: 1 };
+    mapper.handleResult(result, { held: false });
+    mapper.handleResult(result, { held: false });
+
+    expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
+  });
+
+  it("closes the bookend from the fallback, and only once", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0.5, num_turns: 3 };
+    mapper.handleResult(result, { held: true });
+    mapper.emitFinishedBookend(result);
+    mapper.emitFinishedBookend(result);
+
+    const finished = emitted.filter((e) => e.event === "agent_finished");
+    expect(finished).toHaveLength(1);
+    expect(finished[0].data).toMatchObject({ totalCostUsd: 0.5, numTurns: 3 });
+  });
+
+  it("does not re-emit the bookend from the fallback after a normal emit", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0, num_turns: 1 };
+    mapper.handleResult(result, { held: false });
+    mapper.emitFinishedBookend(result);
+
+    expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
+  });
+
+  it("still closes the bookend when no result ever arrived", () => {
+    const { mapper, emitted } = makeMapper();
+
+    mapper.emitFinishedBookend(null);
+
+    const finished = emitted.filter((e) => e.event === "agent_finished");
+    expect(finished).toHaveLength(1);
+    expect(finished[0].data).toMatchObject({ usage: null, totalCostUsd: null, numTurns: null });
+  });
+
+  it("emits background_tasks when the flag is on and not when it is off", () => {
+    const { mapper: onMapper, emitted: on } = makeMapper();
+    onMapper.handleBackgroundTasks([{ taskId: "a", type: "shell", description: "build" }]);
+    expect(on.filter((e) => e.event === "background_tasks")).toHaveLength(1);
+    expect(on[0].data).toMatchObject({ backend: "claude", count: 1 });
+
+    const { mapper: offMapper, emitted: off } = makeMapper({ emitBackgroundTaskEvents: false });
+    offMapper.handleBackgroundTasks([{ taskId: "a", type: "shell", description: "build" }]);
+    expect(off).toHaveLength(0);
+  });
+});
