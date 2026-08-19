@@ -284,6 +284,14 @@
         "emitTodoEvents": {
           "description": "Publish todo-list updates as decision sideband events (default: true).",
           "type": "boolean"
+        },
+        "holdTaskForBackgroundWork": {
+          "description": "Hold the A2A Task open in `working` while Claude has background work in flight, completing it only once a turn ends with nothing left running. Default: true. Set false to restore the previous behaviour of completing the Task at the first SDK result.",
+          "type": "boolean"
+        },
+        "emitBackgroundTaskEvents": {
+          "description": "Publish background-task set changes as sideband events. Default: true.",
+          "type": "boolean"
         }
       },
       "type": "object"

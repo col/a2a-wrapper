@@ -215,6 +215,15 @@ export interface FeatureFlags {
   emitTodoEvents?: boolean;
   /** Publish rate-limit status changes as sideband events. Default: true. */
   emitRateLimitEvents?: boolean;
+  /**
+   * Hold the A2A Task open in `working` while Claude has background work in
+   * flight, completing it only once a turn ends with nothing left running.
+   * Default: true. Set false to restore the previous behaviour of completing
+   * the Task at the first SDK result.
+   */
+  holdTaskForBackgroundWork?: boolean;
+  /** Publish background-task set changes as sideband events. Default: true. */
+  emitBackgroundTaskEvents?: boolean;
 }
 
 // ─── Timeout Config ─────────────────────────────────────────────────────────
