@@ -336,6 +336,32 @@ export class ClaudeExecutor implements AgentExecutor {
           bus.finished();
         };
 
+        /**
+         * Emit this round's output artifact.
+         *
+         * Reads `streamArtifactStarted`/`finalText`/`round` at call time, so the
+         * in-loop caller and the post-loop fallback stay in lockstep by
+         * construction rather than by two copies agreeing.
+         *
+         * Deliberately NOT reused by `endTurnRateLimited`: that path must close
+         * an already-open stream without ever publishing a buffered artifact,
+         * so it keeps its streaming-only variant.
+         */
+        const publishRoundArtifact = (): void => {
+          if (streaming && streamArtifactStarted) {
+            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId(), finalText);
+          } else if (finalText) {
+            publishFinalArtifact(bus, taskId, contextId, finalText);
+          }
+        };
+
+        /** Single definition of the successful ending, mirroring endTurnRateLimited. */
+        const endTurnCompleted = (): void => {
+          publishStatus(bus, taskId, contextId, "completed", undefined, true);
+          terminalPublished = true;
+          bus.finished();
+        };
+
         try {
           publishStatus(bus, taskId, contextId, "working", "Processing request...");
 
@@ -357,6 +383,13 @@ export class ClaudeExecutor implements AgentExecutor {
             if (verdict.kind !== "none") mapper.handleRateLimit(verdict);
             if (verdict.kind === "rejected") {
               rateLimited = verdict.snapshot;
+              // Unlike the error-result and completed breaks below, this one
+              // does not pre-resolve `inputClosed`, and does not need to: the
+              // SDK launches its input pump fire-and-forget and `Query.return()`
+              // closes the transport without awaiting the parked input
+              // generator, so `break` cannot block on it. The `finally` still
+              // resolves it, which is what actually releases the generator.
+              // `endTurnRateLimited` then aborts, tearing down the subprocess.
               break;
             }
 
@@ -413,11 +446,7 @@ export class ClaudeExecutor implements AgentExecutor {
 
             // This round's output, closed either way so the next round starts a
             // fresh artifact.
-            if (streaming && streamArtifactStarted) {
-              publishLastChunkMarker(bus, taskId, contextId, streamArtifactId(), finalText);
-            } else if (finalText) {
-              publishFinalArtifact(bus, taskId, contextId, finalText);
-            }
+            publishRoundArtifact();
             streamArtifactStarted = false;
 
             if (holding) {
@@ -432,9 +461,7 @@ export class ClaudeExecutor implements AgentExecutor {
               continue;
             }
 
-            publishStatus(bus, taskId, contextId, "completed", undefined, true);
-            terminalPublished = true;
-            bus.finished();
+            endTurnCompleted();
             inputClosed.resolve();
             break;
           }
@@ -451,7 +478,7 @@ export class ClaudeExecutor implements AgentExecutor {
             return;
           }
 
-          if (!terminalPublished) {
+          if (!terminalPublished && !timedOut) {
             // The iterator ended while we were still holding — the CLI died, or
             // it closed input on us. Complete with whatever the last round left
             // rather than hanging until the prompt timeout.
@@ -459,12 +486,20 @@ export class ClaudeExecutor implements AgentExecutor {
               taskId,
               liveBackgroundTasks: backgroundTasks.size,
             });
-            if (streaming && streamArtifactStarted) {
-              publishLastChunkMarker(bus, taskId, contextId, streamArtifactId(), finalText);
-            } else if (finalText) {
-              publishFinalArtifact(bus, taskId, contextId, finalText);
-            }
-            publishStatus(bus, taskId, contextId, "completed", undefined, true);
+            publishRoundArtifact();
+            endTurnCompleted();
+          }
+
+          if (!terminalPublished) {
+            // `timedOut` is the only way to reach here: the timer's abort ended
+            // the iterator cleanly instead of throwing, so the catch's timeout
+            // branch never ran. Reporting `completed` would claim a turn that
+            // was cut short actually finished, and reporting nothing would end
+            // the Task with no terminal event at all — so publish the same
+            // failure the catch's timeout branch would have.
+            const msg = `Prompt timed out after ${promptTimeout}ms.`;
+            log.error("Task execution timed out", { taskId });
+            publishStatus(bus, taskId, contextId, "failed", msg, true);
             terminalPublished = true;
             bus.finished();
           }

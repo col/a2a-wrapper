@@ -199,6 +199,28 @@ describe("held-open A2A task", () => {
     expect(client.calls[0].inputClosed).toBe(true);
   });
 
+  it("releases the input stream of a held task whose CLI never wakes", async () => {
+    // `hangUntilInputClosed` models a real subprocess: it outlives its scripted
+    // output and only exits once stdin closes. The executor holds this task
+    // open (bg1 never clears) and never gets another message, so the prompt
+    // timeout is the only way out — and the input stream must still be closed
+    // on the way, or the subprocess would be wedged for good.
+    config.timeouts.prompt = 50;
+    const client = new FakeClaudeClient([{
+      messages: [init("s1"), bgChanged("bg1"), result("waiting")],
+      hangUntilInputClosed: true,
+    }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events, finished } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(states(events)).toEqual(["submitted", "working", "working", "failed"]);
+    expect(finished()).toBe(1);
+    expect(client.calls[0].inputClosed).toBe(true);
+  });
+
   it("falls back to completing when the iterator ends while still held", async () => {
     const client = new FakeClaudeClient([{
       messages: [init("s1"), bgChanged("bg1"), result("still waiting")],

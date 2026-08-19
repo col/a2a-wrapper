@@ -29,6 +29,15 @@ export interface FakeTurnScript {
   /** After yielding messages, hang until aborted (for cancel/timeout tests). */
   hangAfter?: boolean;
   /**
+   * Model a real CLI: after the scripted messages, stay alive until the
+   * executor closes its input stream, then end the iterator.
+   *
+   * Opt-in, because the default (end as soon as the script is exhausted) is
+   * what most tests want. With this set, an executor that never resolves its
+   * input deferred wedges exactly the way a real subprocess would.
+   */
+  hangUntilInputClosed?: boolean;
+  /**
    * Make `iterator.return()` reject — what a consumer's `break` hits when the
    * SDK's teardown fails. A string customizes the error message.
    */
@@ -43,7 +52,12 @@ function abortError(): Error {
 
 class FakeQuery implements QueryLike {
   public interrupted = false;
-  constructor(private script: FakeTurnScript, private signal?: AbortSignal) {}
+  constructor(
+    private script: FakeTurnScript,
+    private signal?: AbortSignal,
+    /** Settles when the executor closes its input stream. */
+    private inputClosed: Promise<void> = Promise.resolve(),
+  ) {}
 
   async interrupt(): Promise<void> {
     this.interrupted = true;
@@ -69,6 +83,15 @@ class FakeQuery implements QueryLike {
       if (this.script.delayMs) await new Promise((r) => setTimeout(r, this.script.delayMs));
       if (this.signal?.aborted) throw abortError();
       yield msg;
+    }
+    if (this.script.hangUntilInputClosed) {
+      // A real CLI exits when its stdin closes, not when it runs out of things
+      // to say. Aborting still tears it down mid-wait.
+      await new Promise<void>((resolve, reject) => {
+        if (this.signal?.aborted) return reject(abortError());
+        this.signal?.addEventListener("abort", () => reject(abortError()), { once: true });
+        void this.inputClosed.then(resolve);
+      });
     }
     if (this.script.hangAfter) {
       await new Promise<never>((_, reject) => {
@@ -101,10 +124,17 @@ export class FakeClaudeClient implements ClaudeClientLike {
     };
     this.calls.push(call);
 
+    // A string prompt is closed the moment it is handed over; a stream is not
+    // closed until the executor resolves its deferred.
+    let markInputClosed!: () => void;
+    const inputClosed = new Promise<void>((r) => { markInputClosed = r; });
+
     // Drain the input stream the way the real SDK does, so tests can assert the
     // executor closed it. The generator parks after its first message, so this
     // loop stays pending until the executor resolves its deferred.
-    if (typeof prompt !== "string") {
+    if (typeof prompt === "string") {
+      markInputClosed();
+    } else {
       void (async () => {
         try {
           for await (const msg of prompt) {
@@ -116,11 +146,12 @@ export class FakeClaudeClient implements ClaudeClientLike {
           // swallow it so an unhandled rejection cannot fail an unrelated test.
         }
         call.inputClosed = true;
+        markInputClosed();
       })();
     }
 
     const script = this.scripts[Math.min(this.calls.length - 1, this.scripts.length - 1)];
-    const q = new FakeQuery(script, options.abortController?.signal);
+    const q = new FakeQuery(script, options.abortController?.signal, inputClosed);
     this.queries.push(q);
     return q;
   }
