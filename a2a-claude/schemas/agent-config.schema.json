@@ -408,6 +408,10 @@
     "FeatureFlags": {
       "additionalProperties": false,
       "properties": {
+        "emitBackgroundTaskEvents": {
+          "description": "Publish background-task set changes as sideband events. Default: true.",
+          "type": "boolean"
+        },
         "emitFileChangeEvents": {
           "description": "Publish file change metadata as sideband events. Default: true.",
           "type": "boolean"
@@ -426,6 +430,10 @@
         },
         "emitToolEvents": {
           "description": "Publish tool_call_start/end sideband events. Default: true.",
+          "type": "boolean"
+        },
+        "holdTaskForBackgroundWork": {
+          "description": "Hold the A2A Task open in `working` while Claude has background work in flight, completing it only once a turn ends with nothing left running. Default: true. Set false to restore the previous behaviour of completing the Task at the first SDK result.",
           "type": "boolean"
         },
         "streamArtifactChunks": {

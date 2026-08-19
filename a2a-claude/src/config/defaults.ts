@@ -48,6 +48,8 @@ export const DEFAULTS: Required<AgentConfig> = {
     emitFileChangeEvents: true,
     emitTodoEvents: true,
     emitRateLimitEvents: true,
+    holdTaskForBackgroundWork: true,
+    emitBackgroundTaskEvents: true,
   },
   timeouts: {
     prompt: 600_000,
