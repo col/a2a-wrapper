@@ -221,6 +221,52 @@ describe("held-open A2A task", () => {
     expect(client.calls[0].inputClosed).toBe(true);
   });
 
+  it("publishes no second terminal event when a cancel ends the iterator cleanly", async () => {
+    // `endCleanlyOnAbort` models the race where the subprocess closes its
+    // stream just as the abort lands: the iterator ends normally, so none of
+    // the executor's abort handling runs and the post-loop fallback is what
+    // has to notice. The task is held (bg1 never clears), so nothing terminal
+    // was published in the loop — exactly the state where a naive fallback
+    // would emit `completed` on top of `cancelTask`'s `canceled`.
+    //
+    // One bus, as in production, so a contradictory pair is visible.
+    const client = new FakeClaudeClient([{
+      messages: [init("s1"), bgChanged("bg1"), result("waiting")],
+      hangAfter: true,
+      endCleanlyOnAbort: true,
+    }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events, finished } = makeBus();
+
+    const p = ex.execute(makeCtx("t1", "ctx-1"), bus);
+    await new Promise((r) => setTimeout(r, 20));
+    await ex.cancelTask("t1", bus);
+    await p;
+
+    expect(states(events)).toEqual(["submitted", "working", "working", "canceled"]);
+    expect(finished()).toBe(1);
+  });
+
+  it("reports a timeout when the timer's abort ends the iterator cleanly", async () => {
+    // Same clean-end race as the cancel test above, but reached via the prompt
+    // timer. The catch's timeout branch never runs, so the post-loop block is
+    // the only thing standing between this and a Task that either claims it
+    // `completed` or never terminates at all.
+    config.timeouts.prompt = 50;
+    const client = new FakeClaudeClient([{
+      messages: [init("s1"), bgChanged("bg1"), result("waiting")],
+      hangAfter: true,
+      endCleanlyOnAbort: true,
+    }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events, finished } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+
+    expect(states(events)).toEqual(["submitted", "working", "working", "failed"]);
+    expect(finished()).toBe(1);
+  });
+
   it("falls back to completing when the iterator ends while still held", async () => {
     const client = new FakeClaudeClient([{
       messages: [init("s1"), bgChanged("bg1"), result("still waiting")],

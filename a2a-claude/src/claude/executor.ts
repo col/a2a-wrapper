@@ -478,7 +478,15 @@ export class ClaudeExecutor implements AgentExecutor {
             return;
           }
 
-          if (!terminalPublished && !timedOut) {
+          // An abort can end the iterator *cleanly* rather than throwing, in
+          // which case none of the catch's abort handling runs and we have to
+          // reproduce it here. Everything that aborts is a reason the turn did
+          // not finish on its own, so none of them may report `completed`.
+          // (A rate-limit abort also lands here in principle, but that path
+          // returned above.)
+          const aborted = abortController.signal.aborted;
+
+          if (!terminalPublished && !aborted) {
             // The iterator ended while we were still holding — the CLI died, or
             // it closed input on us. Complete with whatever the last round left
             // rather than hanging until the prompt timeout.
@@ -490,12 +498,11 @@ export class ClaudeExecutor implements AgentExecutor {
             endTurnCompleted();
           }
 
-          if (!terminalPublished) {
-            // `timedOut` is the only way to reach here: the timer's abort ended
-            // the iterator cleanly instead of throwing, so the catch's timeout
-            // branch never ran. Reporting `completed` would claim a turn that
-            // was cut short actually finished, and reporting nothing would end
-            // the Task with no terminal event at all — so publish the same
+          if (!terminalPublished && aborted && timedOut) {
+            // The timer's abort ended the iterator cleanly, so the catch's
+            // timeout branch never ran. Reporting `completed` would claim a turn
+            // that was cut short actually finished, and reporting nothing would
+            // end the Task with no terminal event at all — so publish the same
             // failure the catch's timeout branch would have.
             const msg = `Prompt timed out after ${promptTimeout}ms.`;
             log.error("Task execution timed out", { taskId });
@@ -503,6 +510,11 @@ export class ClaudeExecutor implements AgentExecutor {
             terminalPublished = true;
             bus.finished();
           }
+
+          // The remaining case — aborted, not timed out — is cancellation, and
+          // it deliberately publishes nothing: `cancelTask` already published
+          // `canceled` and called `bus.finished()`. Emitting `completed` here
+          // would hand the client two terminal events that contradict.
         } catch (err) {
           // A detected rate limit outranks whatever the teardown threw: the
           // `break` above awaits iterator.return(), so a failing teardown would

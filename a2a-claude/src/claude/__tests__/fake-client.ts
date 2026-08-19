@@ -38,6 +38,16 @@ export interface FakeTurnScript {
    */
   hangUntilInputClosed?: boolean;
   /**
+   * On abort, end the iterator cleanly instead of rejecting with an
+   * `AbortError`.
+   *
+   * Opt-in, because rejecting is what the SDK normally does and what every
+   * other script here relies on. This models the race where the subprocess
+   * happens to close its stream just as the abort lands, so the consumer sees
+   * a normal end-of-iteration and none of its abort handling runs.
+   */
+  endCleanlyOnAbort?: boolean;
+  /**
    * Make `iterator.return()` reject — what a consumer's `break` hits when the
    * SDK's teardown fails. A string customizes the error message.
    */
@@ -77,27 +87,46 @@ class FakeQuery implements QueryLike {
     } as AsyncIterator<SDKMessageLike>;
   }
 
+  /**
+   * True once aborted — throwing `AbortError` unless the script asked for a
+   * clean end, in which case the caller should `return`.
+   */
+  private abortedNow(): boolean {
+    if (!this.signal?.aborted) return false;
+    if (this.script.endCleanlyOnAbort) return true;
+    throw abortError();
+  }
+
+  /**
+   * Park until `until` settles, or until abort. Returns "aborted" only when the
+   * script opted into a clean end; otherwise abort rejects, as the SDK does.
+   */
+  private park(until?: Promise<void>): Promise<"settled" | "aborted"> {
+    return new Promise<"settled" | "aborted">((resolve, reject) => {
+      const onAbort = (): void => {
+        if (this.script.endCleanlyOnAbort) resolve("aborted");
+        else reject(abortError());
+      };
+      if (this.signal?.aborted) return onAbort();
+      this.signal?.addEventListener("abort", onAbort, { once: true });
+      if (until) void until.then(() => resolve("settled"));
+    });
+  }
+
   private async *generate(): AsyncGenerator<SDKMessageLike> {
     for (const msg of this.script.messages) {
-      if (this.signal?.aborted) throw abortError();
+      if (this.abortedNow()) return;
       if (this.script.delayMs) await new Promise((r) => setTimeout(r, this.script.delayMs));
-      if (this.signal?.aborted) throw abortError();
+      if (this.abortedNow()) return;
       yield msg;
     }
     if (this.script.hangUntilInputClosed) {
       // A real CLI exits when its stdin closes, not when it runs out of things
       // to say. Aborting still tears it down mid-wait.
-      await new Promise<void>((resolve, reject) => {
-        if (this.signal?.aborted) return reject(abortError());
-        this.signal?.addEventListener("abort", () => reject(abortError()), { once: true });
-        void this.inputClosed.then(resolve);
-      });
+      if ((await this.park(this.inputClosed)) === "aborted") return;
     }
     if (this.script.hangAfter) {
-      await new Promise<never>((_, reject) => {
-        if (this.signal?.aborted) return reject(abortError());
-        this.signal?.addEventListener("abort", () => reject(abortError()), { once: true });
-      });
+      if ((await this.park()) === "aborted") return;
     }
   }
 }
