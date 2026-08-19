@@ -279,4 +279,40 @@ describe("held-open A2A task", () => {
     expect(states(events)).toEqual(["submitted", "working", "working", "completed"]);
     expect(finished()).toBe(1);
   });
+
+  it("gives each round its own streaming artifact id and lastChunk marker", async () => {
+    config.features.streamArtifactChunks = true;
+    const delta = (text: string): SDKMessageLike => ({
+      type: "stream_event",
+      parent_tool_use_id: null,
+      event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+    });
+
+    const client = new FakeClaudeClient([{
+      messages: [
+        init("s1"),
+        bgChanged("bg1"), delta("build "), delta("started"), result("build started"),
+        bgChanged(), delta("build passed"), result("build passed"),
+      ],
+    }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events } = makeBus();
+
+    await ex.execute(makeCtx("t1", "ctx-1"), bus);
+
+    const ids = artifacts(events).map(
+      (a) => (a.data as { artifact?: { artifactId?: string } }).artifact?.artifactId,
+    );
+    expect(ids).toEqual([
+      "response-t1-1", "response-t1-1", "response-t1-1",   // 2 chunks + marker
+      "response-t1-2", "response-t1-2",                     // 1 chunk + marker
+    ]);
+
+    const markers = artifacts(events).filter(
+      (a) => (a.data as { lastChunk?: boolean }).lastChunk === true,
+    );
+    expect(markers).toHaveLength(2);
+    expect(JSON.stringify(markers[0])).toContain("build started");
+    expect(JSON.stringify(markers[1])).toContain("build passed");
+  });
 });
