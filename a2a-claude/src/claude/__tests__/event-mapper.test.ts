@@ -268,3 +268,38 @@ describe("sanitizeMessage", () => {
     expect(out.length).toBeLessThanOrEqual(2000);
   });
 });
+
+describe("EventMapper across a held-open task", () => {
+  it("emits agent_started once even when init is re-emitted on wake", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const init = { type: "system", subtype: "init", model: "claude-test" };
+    mapper.handleMessage(init);
+    mapper.handleMessage(init);
+    mapper.handleMessage(init);
+
+    expect(emitted.filter((e) => e.event === "agent_started")).toHaveLength(1);
+  });
+
+  it("suppresses agent_finished while the task is held, emitting once at the end", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0, num_turns: 1 };
+    mapper.handleResult(result, { held: true });
+    mapper.handleResult(result, { held: true });
+    mapper.handleResult(result, { held: false });
+
+    expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
+  });
+
+  it("emits background_tasks when the flag is on and not when it is off", () => {
+    const { mapper: onMapper, emitted: on } = makeMapper();
+    onMapper.handleBackgroundTasks([{ taskId: "a", type: "shell", description: "build" }]);
+    expect(on.filter((e) => e.event === "background_tasks")).toHaveLength(1);
+    expect(on[0].data).toMatchObject({ backend: "claude", count: 1 });
+
+    const { mapper: offMapper, emitted: off } = makeMapper({ emitBackgroundTaskEvents: false });
+    offMapper.handleBackgroundTasks([{ taskId: "a", type: "shell", description: "build" }]);
+    expect(off).toHaveLength(0);
+  });
+});

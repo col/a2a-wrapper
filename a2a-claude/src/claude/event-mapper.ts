@@ -13,6 +13,7 @@
 
 import type { AgentEventEmitter } from "@a2a-wrapper/core";
 import type { AgentConfig } from "../config/types.js";
+import type { BackgroundTaskInfo } from "./background-tasks.js";
 import type { SDKMessageLike } from "./client-factory.js";
 import type { RateLimitVerdict } from "./rate-limit-tracker.js";
 import { logger } from "../utils/logger.js";
@@ -80,6 +81,16 @@ export class EventMapper {
   private readonly emitter: AgentEventEmitter;
   private readonly config: Required<AgentConfig>;
 
+  /**
+   * A background-task wake re-emits `system/init` for the same session, so
+   * without this an A2A Task that spans several SDK turns would emit
+   * `agent_started` once per turn. Both bookends are per-A2A-Task, and this
+   * mapper is constructed per `execute()` call, so instance state is the
+   * right scope.
+   */
+  private sawInit = false;
+  private emittedFinished = false;
+
   constructor(emitter: AgentEventEmitter, config: Required<AgentConfig>) {
     this.emitter = emitter;
     this.config = config;
@@ -98,7 +109,7 @@ export class EventMapper {
           if (msg.parent_tool_use_id == null) this.handleUser(msg);
           break;
         case "result":
-          this.handleResult(msg);
+          this.handleResult(msg, { held: false });
           break;
         case "stream_event":
           break; // consumed by the executor for artifact deltas
@@ -138,8 +149,23 @@ export class EventMapper {
     });
   }
 
+  /**
+   * Emit the live background-task set. Called by the executor only when
+   * membership actually changed, so this is a transition, not a heartbeat.
+   */
+  handleBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
+    if (!this.config.features.emitBackgroundTaskEvents) return;
+    this.emitter.emit("background_tasks", {
+      backend: "claude",
+      count: tasks.length,
+      tasks,
+    });
+  }
+
   private handleSystem(msg: SDKMessageLike): void {
     if (msg.subtype === "init") {
+      if (this.sawInit) return;
+      this.sawInit = true;
       this.emitter.emit("agent_started", {
         backend: "claude",
         model: typeof msg.model === "string" ? msg.model : "",
@@ -257,8 +283,16 @@ export class EventMapper {
     }
   }
 
-  private handleResult(msg: SDKMessageLike): void {
+  /**
+   * @param opts.held - True when the executor is keeping the A2A Task open
+   *   because background work is still in flight. `agent_finished` is a
+   *   per-A2A-Task bookend, not a per-SDK-turn one, so it is suppressed until
+   *   the turn that actually ends the Task.
+   */
+  handleResult(msg: SDKMessageLike, opts: { held: boolean } = { held: false }): void {
     if (msg.subtype === "success") {
+      if (opts.held || this.emittedFinished) return;
+      this.emittedFinished = true;
       this.emitter.emit("agent_finished", {
         backend: "claude",
         usage: sanitizeData(msg.usage) ?? null,
