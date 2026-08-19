@@ -13,7 +13,7 @@ Claude Code is Anthropic's production-grade software engineering agent. It handl
 
 **Features:**
 - Full [A2A v0.3.0](https://github.com/google-deepmind/a2a) protocol — Agent Card, JSON-RPC, REST, streaming
-- Powered by `@anthropic-ai/claude-agent-sdk` (pinned `0.3.202`) — `claude-sonnet-5`, `claude-opus-4-8`, and any SDK-compatible model
+- Powered by `@anthropic-ai/claude-agent-sdk` (`^0.3.235`) — `claude-sonnet-5`, `claude-opus-4-8`, and any SDK-compatible model
 - Permission-mode guardrails — headless-safe modes only, with an explicit opt-in for unrestricted access
 - MCP tool support — stdio and Streamable HTTP transports
 - Multi-turn context continuity — each A2A `contextId` maps to a persistent Claude session (resumed via the SDK's `resume` option)
@@ -379,12 +379,10 @@ still running.
 same `taskId`/`type`/`description` list plus a `count`. See
 [Sideband Events](#sideband-events).
 
-> **SDK requirement:** the `background_tasks_changed` message this feature
-> reads was added in `@anthropic-ai/claude-agent-sdk` `0.3.235`. This package
-> currently pins `0.3.202`, whose CLI never emits it — so until that pin is
-> raised the live set is always empty and every Task completes at its first
-> result, exactly as `holdTaskForBackgroundWork: false` would. The wiring is
-> in place and inert; nothing else changes in the meantime.
+> **SDK requirement:** this feature reads the SDK's
+> `system`/`background_tasks_changed` message, which requires
+> `@anthropic-ai/claude-agent-sdk` `>= 0.3.235`. Earlier versions carry
+> neither the typing nor a CLI that emits it.
 
 #### Caveats
 
