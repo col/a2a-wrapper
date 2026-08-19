@@ -376,6 +376,9 @@ export class ClaudeExecutor implements AgentExecutor {
           this.sessionManager!.attachQuery(taskId, q);
 
           let resultError: string | null = null;
+          // The last result the loop saw, kept only so the post-loop fallback
+          // can close the `agent_finished` bookend with real usage figures.
+          let lastResult: SDKMessageLike | null = null;
           const rateLimits = new RateLimitTracker();
 
           for await (const msg of q as AsyncIterable<SDKMessageLike>) {
@@ -434,6 +437,7 @@ export class ClaudeExecutor implements AgentExecutor {
               resultError = reasons[String(msg.subtype)] ?? `Execution failed (${String(msg.subtype)}).`;
             }
 
+            lastResult = msg;
             const holding = holdEnabled && resultError === null && backgroundTasks.size > 0;
             mapper.handleResult(msg, { held: holding });
 
@@ -495,6 +499,11 @@ export class ClaudeExecutor implements AgentExecutor {
               liveBackgroundTasks: backgroundTasks.size,
             });
             publishRoundArtifact();
+            // This is the round that completes the Task, so it owes the
+            // `agent_finished` bookend — the last result was consumed with
+            // `{ held: true }`, which suppressed it. The mapper's latch keeps
+            // it to one per Task, so a path that already emitted is a no-op.
+            mapper.emitFinishedBookend(lastResult);
             endTurnCompleted();
           }
 

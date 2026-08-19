@@ -108,6 +108,14 @@ export class EventMapper {
         case "user":
           if (msg.parent_tool_use_id == null) this.handleUser(msg);
           break;
+        // Secondary entry point only. The executor routes non-result messages
+        // here and calls `handleResult` directly for results, because only it
+        // knows whether the A2A Task is being held open. This case therefore
+        // hardcodes `{ held: false }` and would emit the `agent_finished`
+        // bookend on an intermediate round — do not re-route the executor's
+        // results through `handleMessage`, or hold suppression is silently
+        // lost. Kept because other callers (and tests) hand whole message
+        // streams to `handleMessage`.
         case "result":
           this.handleResult(msg, { held: false });
           break;
@@ -313,6 +321,37 @@ export class EventMapper {
       backend: "claude",
       message: reasons[String(msg.subtype)] ?? `Execution failed (${String(msg.subtype)}).`,
       ...(errs.length > 0 ? { errors: errs } : {}),
+    });
+  }
+
+  /**
+   * Close the `agent_finished` bookend on a path that completes the A2A Task
+   * without an unheld result to carry it.
+   *
+   * The executor's post-loop fallback is the case: the SDK iterator ended
+   * while the Task was still held, so the last result was already consumed
+   * with `{ held: true }` and its bookend suppressed. That round is the one
+   * that completes the Task, so the bookend belongs to it — otherwise the
+   * trace stream shows `agent_started` with nothing closing it and a consumer
+   * pairing bookends leaks a span.
+   *
+   * Pass the last result seen so its usage figures survive; pass `null` when
+   * the iterator ended before any result arrived. Idempotent: shares the
+   * `emittedFinished` latch with {@link handleResult}, so a Task whose
+   * bookend already went out emits nothing here.
+   */
+  emitFinishedBookend(lastResult: SDKMessageLike | null): void {
+    if (this.emittedFinished) return;
+    if (lastResult && lastResult.subtype === "success") {
+      this.handleResult(lastResult, { held: false });
+      return;
+    }
+    this.emittedFinished = true;
+    this.emitter.emit("agent_finished", {
+      backend: "claude",
+      usage: null,
+      totalCostUsd: null,
+      numTurns: null,
     });
   }
 }

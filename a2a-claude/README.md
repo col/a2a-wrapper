@@ -217,11 +217,13 @@ Two more things worth knowing:
 
 ### Prompt timeout
 
-`timeouts.prompt` bounds a single turn, in milliseconds (default `600000`, ten minutes). When it elapses the turn is aborted and the task is published as `failed`.
+`timeouts.prompt` bounds one A2A task from start to terminal state, in milliseconds (default `600000`, ten minutes). When it elapses the task is aborted and published as `failed`.
 
-Set it to `0` — or any value `<= 0` — to disable the bound entirely and let a turn run until it completes. This is the right setting for agents whose turns legitimately run for hours.
+The timer is armed once, when the task starts, and is never re-armed. With `features.holdTaskForBackgroundWork` on (the default) a task can span several SDK turns, and this one budget covers all of them — including the idle gaps while Claude's background work runs elsewhere. See [Background tasks → Caveats](#caveats) before choosing a value.
 
-Disabling it has one consequence worth knowing: turns are serialized per context, so a turn that never finishes holds its context's queue indefinitely and every later turn on the same `contextId` blocks behind it. Cancelling the task (`tasks/cancel`) still aborts the running turn and is the escape hatch.
+Set it to `0` — or any value `<= 0` — to disable the bound entirely and let a task run until it completes. This is the right setting for agents whose turns legitimately run for hours.
+
+Disabling it has one consequence worth knowing: turns are serialized per context, so a turn that never finishes holds its context's queue indefinitely and every later turn on the same `contextId` blocks behind it. Cancelling the task (`tasks/cancel`) still aborts the running turn and is the escape hatch. With background-task holding on, that escape hatch is the *only* release — see [Background tasks → Caveats](#caveats).
 
 ### Session lifetime
 
@@ -505,7 +507,12 @@ Sideband events are published through `AgentEventEmitter` for every Claude Agent
 | `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns`; emitted once per A2A Task, on the round that finally completes it — not on every intermediate round of a held-open Task |
 | `agent_error` | SDK `result` failure subtypes / `error` message | Sanitized error message; reason mapped from the SDK's failure subtype (e.g. max turns, max budget) |
 | `rate_limit` | SDK `rate_limit_event`, `system`/`api_retry` with `error: "rate_limit"`, or an assistant `rate_limit` error | `action` is `"ended_turn"` (rejection — the turn stops), `"retrying"` (SDK internal retry, with the `retry` counters), or `"warning"`; carries `status` plus `rateLimitType` / `resetsAt` / `utilization` when the SDK reports them. Controlled by `features.emitRateLimitEvents` |
-| `background_tasks` | SDK `system`/`background_tasks_changed` message | Level signal with replace semantics — each event carries the full live set (`taskId` / `type` / `description`) plus `count`, and is only emitted when membership actually changes. See [Background tasks](#background-tasks). Controlled by `features.emitBackgroundTaskEvents` |
+| `background_tasks` | SDK `system`/`background_tasks_changed` message | Level signal with replace semantics — each event carries the full live set (`taskId` / `type` / `description`) plus `count`, and is only emitted when membership actually changes. On the default `a2a` transport it arrives as a `trace.background_tasks` artifact. See [Background tasks](#background-tasks). Controlled by `features.emitBackgroundTaskEvents` |
+
+> **Note:** `rate_limit` (and `context_window`) have no A2A trace-artifact
+> mapping, so on the default `a2a` transport they are dropped rather than
+> delivered. They are observable on the `http` transport or a custom one. This
+> is a pre-existing gap, tracked separately.
 
 ## Docker
 

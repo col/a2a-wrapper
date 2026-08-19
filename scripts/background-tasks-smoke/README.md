@@ -23,7 +23,17 @@ on one query, with no second user message pushed. That is the whole premise of
 the feature: the CLI wakes itself when background work settles.
 
 `spike-chain.mjs` mirrors the executor's hold-vs-complete decision inline and
-should end with `decisions=["HOLD","HOLD","COMPLETE"]`.
+prints one decision per result, each `HOLD (waiting on <task ids>)` or
+`COMPLETE`. A healthy chain run ends on `COMPLETE` with at least one `HOLD`
+before it — something like:
+
+```
+### results=3 decisions=["HOLD (waiting on bg_01…)","HOLD (waiting on bg_02…)","COMPLETE"]
+```
+
+The task ids are generated per run, so match on the shape rather than the
+exact string. What matters is that at least one result was held and the last
+one was not.
 
 Both should show `session_state_changed` **never firing**. It is documented in
 the SDK as the "authoritative turn-over signal", but it is not carried by the

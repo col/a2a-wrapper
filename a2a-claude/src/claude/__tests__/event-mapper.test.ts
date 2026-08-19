@@ -292,6 +292,52 @@ describe("EventMapper across a held-open task", () => {
     expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
   });
 
+  it("emits agent_finished once even when two unheld results arrive", () => {
+    // The `emittedFinished` latch is what lets the executor's post-loop
+    // fallback re-emit the bookend without risking a double-fire on a normal
+    // path. Pin it directly rather than trusting the claim.
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0, num_turns: 1 };
+    mapper.handleResult(result, { held: false });
+    mapper.handleResult(result, { held: false });
+
+    expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
+  });
+
+  it("closes the bookend from the fallback, and only once", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0.5, num_turns: 3 };
+    mapper.handleResult(result, { held: true });
+    mapper.emitFinishedBookend(result);
+    mapper.emitFinishedBookend(result);
+
+    const finished = emitted.filter((e) => e.event === "agent_finished");
+    expect(finished).toHaveLength(1);
+    expect(finished[0].data).toMatchObject({ totalCostUsd: 0.5, numTurns: 3 });
+  });
+
+  it("does not re-emit the bookend from the fallback after a normal emit", () => {
+    const { mapper, emitted } = makeMapper();
+
+    const result = { type: "result", subtype: "success", result: "x", usage: {}, total_cost_usd: 0, num_turns: 1 };
+    mapper.handleResult(result, { held: false });
+    mapper.emitFinishedBookend(result);
+
+    expect(emitted.filter((e) => e.event === "agent_finished")).toHaveLength(1);
+  });
+
+  it("still closes the bookend when no result ever arrived", () => {
+    const { mapper, emitted } = makeMapper();
+
+    mapper.emitFinishedBookend(null);
+
+    const finished = emitted.filter((e) => e.event === "agent_finished");
+    expect(finished).toHaveLength(1);
+    expect(finished[0].data).toMatchObject({ usage: null, totalCostUsd: null, numTurns: null });
+  });
+
   it("emits background_tasks when the flag is on and not when it is off", () => {
     const { mapper: onMapper, emitted: on } = makeMapper();
     onMapper.handleBackgroundTasks([{ taskId: "a", type: "shell", description: "build" }]);

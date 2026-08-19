@@ -45,4 +45,7 @@ every background-task wake, so without this a held-open Task would have
 emitted `agent_started` several times over.
 
 Adds a `background_tasks` sideband event type to `@a2a-wrapper/core`, gated by
-`features.emitBackgroundTaskEvents`.
+`features.emitBackgroundTaskEvents`. On the default `a2a` event transport it
+is published as a trace artifact named `trace.background_tasks`, alongside the
+existing `trace.lifecycle` / `trace.mcp` / `trace.thinking` / `trace.decision`
+keys.

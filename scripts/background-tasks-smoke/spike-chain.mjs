@@ -34,7 +34,8 @@ const stopTimer = setTimeout(() => { log("### hard stop — closing input"); clo
 
 // Mirror the proposed executor logic exactly: track the level set, and at each
 // result decide hold-vs-complete from it.
-// Expected: decisions=["HOLD","HOLD","COMPLETE"]
+// Expected: one decision per result, at least one `HOLD (waiting on <ids>)`
+// followed by a final `COMPLETE`.
 const live = new Set();
 let results = 0;
 const decisions = [];

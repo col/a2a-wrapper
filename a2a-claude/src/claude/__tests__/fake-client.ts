@@ -52,6 +52,23 @@ export interface FakeTurnScript {
    * SDK's teardown fails. A string customizes the error message.
    */
   throwOnReturn?: boolean | string;
+  /**
+   * Make `iterator.return()` block until the input stream is closed — a
+   * transport whose teardown drains its input pump before completing.
+   *
+   * `break`ing out of a `for await` awaits `iterator.return()`, so under this
+   * model a consumer that breaks *without* first closing its input stream
+   * deadlocks: its own `finally` — the thing that would close the stream —
+   * cannot run until the `break` completes. That is what pins the executor's
+   * pre-`break` `inputClosed.resolve()` calls, which are otherwise
+   * indistinguishable from the unconditional resolve in its `finally`.
+   *
+   * Opt-in, because the SDK shipped today does not do this: `Query.return()`
+   * awaits `cleanup()` (transport close plus a bounded wait for process exit)
+   * and `streamInput` is launched fire-and-forget, so a real `break` cannot
+   * block on the input pump. Existing scripts keep the non-blocking default.
+   */
+  returnAwaitsInputClosed?: boolean;
 }
 
 function abortError(): Error {
@@ -76,13 +93,21 @@ class FakeQuery implements QueryLike {
   [Symbol.asyncIterator](): AsyncIterator<SDKMessageLike> {
     const gen = this.generate();
     const failure = this.script.throwOnReturn;
-    if (!failure) return gen;
+    const drains = this.script.returnAwaitsInputClosed === true;
+    if (!failure && !drains) return gen;
     return {
       next: () => gen.next(),
       throw: (e?: unknown) => gen.throw(e),
       return: async (value?: unknown) => {
-        await gen.return(value as never).catch(() => {});
-        throw new Error(typeof failure === "string" ? failure : "iterator teardown failed");
+        // Drain first, then fail: a teardown that hangs never gets as far as
+        // reporting an error, and the ordering matters for scripts that set
+        // both.
+        if (drains) await this.inputClosed;
+        const done = await gen.return(value as never).catch(() => ({ done: true, value: undefined }));
+        if (failure) {
+          throw new Error(typeof failure === "string" ? failure : "iterator teardown failed");
+        }
+        return done;
       },
     } as AsyncIterator<SDKMessageLike>;
   }
