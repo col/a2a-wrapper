@@ -28,11 +28,13 @@ import {
 import type { RateLimitSnapshot } from "./rate-limit-tracker.js";
 import { validateMcpServers, toClaudeMcpEntry } from "./mcp-adapter.js";
 import { CLAUDE_BACKEND_PATHS } from "./backend-paths.js";
-import { extractUserText } from "./prompt-builder.js";
+import { extractUserText, promptStream } from "./prompt-builder.js";
+import { BackgroundTaskTracker } from "./background-tasks.js";
 
 import {
   resolveTransport,
   AgentEventEmitter,
+  createDeferred,
   materializeMemory,
   bootstrapSubAgents,
   publishTask,
@@ -262,6 +264,10 @@ export class ClaudeExecutor implements AgentExecutor {
         // A prompt timeout of 0 (or any value <= 0) disables the bound entirely:
         // the turn runs until the SDK iterator completes. Without this guard
         // setTimeout would coerce such a delay to the next tick and abort at once.
+        //
+        // Note this timer is armed once, at turn start, and never re-armed — so
+        // for a held-open task it bounds the whole A2A Task including the idle
+        // gaps between SDK turns. See the README caveat.
         const promptTimeout = this.config.timeouts.prompt ?? 600_000;
         const timer =
           promptTimeout > 0
@@ -278,8 +284,27 @@ export class ClaudeExecutor implements AgentExecutor {
         let finalText = "";
         let structuredOutput: unknown;
         let streamArtifactStarted = false;
-        const streamArtifactId = `response-${taskId}`;
         const streaming = this.config.features.streamArtifactChunks === true;
+
+        // One artifact per round, so a held-open task's later rounds cannot
+        // append onto an earlier round's artifact and make its lastChunk
+        // marker's fullText a lie.
+        let round = 1;
+        const streamArtifactId = (): string => `response-${taskId}-${round}`;
+
+        // Terminality is decided inside the loop now, so both the catch and the
+        // post-loop block need to know whether it already happened.
+        let terminalPublished = false;
+
+        // One tracker per query. A query is one CLI process, and the SDK's
+        // background-task level signal is per-process, so this scoping is what
+        // makes "reset to empty when the process restarts" structural.
+        const backgroundTasks = new BackgroundTaskTracker();
+        const holdEnabled = this.config.features.holdTaskForBackgroundWork !== false;
+
+        // Resolving this ends the SDK input stream, which lets the CLI exit.
+        // It MUST be resolved on every exit path — see the finally block.
+        const inputClosed = createDeferred<void>();
 
         /** Single definition of the rate-limit ending, used by both paths. */
         const endTurnRateLimited = (snapshot: RateLimitSnapshot): void => {
@@ -292,10 +317,10 @@ export class ClaudeExecutor implements AgentExecutor {
           abortController.abort();
 
           // Already-sent chunks would otherwise leave the client's artifact
-          // open forever. This closes the stream; finalText is intentionally
-          // "" here, since no success result arrives on this path.
+          // open forever. This closes the current round's stream; finalText is
+          // intentionally "" here, since no success result arrives on this path.
           if (streaming && streamArtifactStarted) {
-            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId, finalText);
+            publishLastChunkMarker(bus, taskId, contextId, streamArtifactId(), finalText);
           }
 
           // Always terminal. The SDK cannot resume an interrupted turn — a
@@ -310,6 +335,36 @@ export class ClaudeExecutor implements AgentExecutor {
             true,
             rateLimitMetadata(snapshot),
           );
+          terminalPublished = true;
+          bus.finished();
+        };
+
+        /**
+         * Emit this round's output artifact.
+         *
+         * Reads `streamArtifactStarted`/`finalText`/`structuredOutput`/`round`
+         * at call time, so the in-loop caller and the post-loop fallback stay
+         * in lockstep by construction rather than by two copies agreeing.
+         *
+         * Deliberately NOT reused by `endTurnRateLimited`: that path must close
+         * an already-open stream without ever publishing a buffered artifact,
+         * so it keeps its streaming-only variant.
+         */
+        const publishRoundArtifact = (): void => {
+          if (streaming && streamArtifactStarted) {
+            publishLastChunkMarkerWithData(bus, taskId, contextId, streamArtifactId(), finalText, structuredOutput);
+          } else if (finalText || structuredOutput !== undefined) {
+            // An empty `response` artifact is noise on the wire — but a result
+            // that carried structured output still has something to deliver
+            // even when its text is empty, so that case is not skipped.
+            publishFinalArtifactWithData(bus, taskId, contextId, finalText, structuredOutput);
+          }
+        };
+
+        /** Single definition of the successful ending, mirroring endTurnRateLimited. */
+        const endTurnCompleted = (): void => {
+          publishStatus(bus, taskId, contextId, "completed", undefined, true);
+          terminalPublished = true;
           bus.finished();
         };
 
@@ -320,10 +375,16 @@ export class ClaudeExecutor implements AgentExecutor {
             resume: session.sessionId ?? undefined,
             abortController,
           });
-          const q = this.client!.runQuery(promptText, options);
+          // Streaming input, not a string: a string prompt makes the SDK close
+          // the CLI's stdin on the first result, ending the process before any
+          // background-task wake could fire.
+          const q = this.client!.runQuery(promptStream(promptText, inputClosed.promise), options);
           this.sessionManager!.attachQuery(taskId, q);
 
           let resultError: string | null = null;
+          // The last result the loop saw, kept only so the post-loop fallback
+          // can close the `agent_finished` bookend with real usage figures.
+          let lastResult: SDKMessageLike | null = null;
           const rateLimits = new RateLimitTracker();
 
           for await (const msg of q as AsyncIterable<SDKMessageLike>) {
@@ -331,7 +392,18 @@ export class ClaudeExecutor implements AgentExecutor {
             if (verdict.kind !== "none") mapper.handleRateLimit(verdict);
             if (verdict.kind === "rejected") {
               rateLimited = verdict.snapshot;
+              // Unlike the error-result and completed breaks below, this one
+              // does not pre-resolve `inputClosed`, and does not need to: the
+              // SDK launches its input pump fire-and-forget and `Query.return()`
+              // closes the transport without awaiting the parked input
+              // generator, so `break` cannot block on it. The `finally` still
+              // resolves it, which is what actually releases the generator.
+              // `endTurnRateLimited` then aborts, tearing down the subprocess.
               break;
+            }
+
+            if (backgroundTasks.observe(msg)) {
+              mapper.handleBackgroundTasks(backgroundTasks.snapshot());
             }
 
             if (msg.type === "system" && msg.subtype === "init" && session.sessionId === null) {
@@ -349,26 +421,61 @@ export class ClaudeExecutor implements AgentExecutor {
               const delta = event?.delta as Record<string, unknown> | undefined;
               if (event?.type === "content_block_delta" && delta?.type === "text_delta" && typeof delta.text === "string") {
                 streamArtifactStarted = true;
-                publishStreamingChunk(bus, taskId, contextId, streamArtifactId, delta.text);
+                publishStreamingChunk(bus, taskId, contextId, streamArtifactId(), delta.text);
               }
             }
 
-            if (msg.type === "result") {
-              if (msg.subtype === "success" && typeof msg.result === "string") {
-                finalText = msg.result;
-                structuredOutput = msg.structured_output;
-              } else if (msg.subtype !== "success") {
-                const reasons: Record<string, string> = {
-                  error_max_turns: "Turn limit reached (max_turns).",
-                  error_max_budget_usd: "Budget limit reached (max_budget_usd).",
-                  error_during_execution: "Error during execution.",
-                  error_max_structured_output_retries: "Structured output retries exhausted.",
-                };
-                resultError = reasons[String(msg.subtype)] ?? `Execution failed (${String(msg.subtype)}).`;
-              }
+            if (msg.type !== "result") {
+              mapper.handleMessage(msg);
+              continue;
             }
 
-            mapper.handleMessage(msg);
+            // ── A result message: decide whether this ends the A2A Task ──
+            if (msg.subtype === "success" && typeof msg.result === "string") {
+              finalText = msg.result;
+              structuredOutput = msg.structured_output;
+            } else if (msg.subtype !== "success") {
+              const reasons: Record<string, string> = {
+                error_max_turns: "Turn limit reached (max_turns).",
+                error_max_budget_usd: "Budget limit reached (max_budget_usd).",
+                error_during_execution: "Error during execution.",
+                error_max_structured_output_retries: "Structured output retries exhausted.",
+              };
+              resultError = reasons[String(msg.subtype)] ?? `Execution failed (${String(msg.subtype)}).`;
+            }
+
+            lastResult = msg;
+            const holding = holdEnabled && resultError === null && backgroundTasks.size > 0;
+            mapper.handleResult(msg, { held: holding });
+
+            if (resultError !== null) {
+              // The CLI stays alive on streaming input, so an error result would
+              // hang the loop unless we close the stream ourselves.
+              inputClosed.resolve();
+              break;
+            }
+
+            // This round's output, closed either way so the next round starts a
+            // fresh artifact.
+            publishRoundArtifact();
+            streamArtifactStarted = false;
+
+            if (holding) {
+              publishStatus(
+                bus, taskId, contextId, "working",
+                finalText || undefined,
+                false,
+                { backgroundTasks: backgroundTasks.snapshot() },
+              );
+              finalText = "";
+              structuredOutput = undefined;
+              round += 1;
+              continue;
+            }
+
+            endTurnCompleted();
+            inputClosed.resolve();
+            break;
           }
 
           if (rateLimited) {
@@ -378,18 +485,53 @@ export class ClaudeExecutor implements AgentExecutor {
 
           if (resultError) {
             publishStatus(bus, taskId, contextId, "failed", sanitizeMessage(resultError), true);
+            terminalPublished = true;
             bus.finished();
             return;
           }
 
-          if (streaming && streamArtifactStarted) {
-            publishLastChunkMarkerWithData(bus, taskId, contextId, streamArtifactId, finalText, structuredOutput);
-          } else {
-            publishFinalArtifactWithData(bus, taskId, contextId, finalText, structuredOutput);
+          // An abort can end the iterator *cleanly* rather than throwing, in
+          // which case none of the catch's abort handling runs and we have to
+          // reproduce it here. Everything that aborts is a reason the turn did
+          // not finish on its own, so none of them may report `completed`.
+          // (A rate-limit abort also lands here in principle, but that path
+          // returned above.)
+          const aborted = abortController.signal.aborted;
+
+          if (!terminalPublished && !aborted) {
+            // The iterator ended while we were still holding — the CLI died, or
+            // it closed input on us. Complete with whatever the last round left
+            // rather than hanging until the prompt timeout.
+            log.info("SDK iterator ended while the task was still held open", {
+              taskId,
+              liveBackgroundTasks: backgroundTasks.size,
+            });
+            publishRoundArtifact();
+            // This is the round that completes the Task, so it owes the
+            // `agent_finished` bookend — the last result was consumed with
+            // `{ held: true }`, which suppressed it. The mapper's latch keeps
+            // it to one per Task, so a path that already emitted is a no-op.
+            mapper.emitFinishedBookend(lastResult);
+            endTurnCompleted();
           }
 
-          publishStatus(bus, taskId, contextId, "completed", undefined, true);
-          bus.finished();
+          if (!terminalPublished && aborted && timedOut) {
+            // The timer's abort ended the iterator cleanly, so the catch's
+            // timeout branch never ran. Reporting `completed` would claim a turn
+            // that was cut short actually finished, and reporting nothing would
+            // end the Task with no terminal event at all — so publish the same
+            // failure the catch's timeout branch would have.
+            const msg = `Prompt timed out after ${promptTimeout}ms.`;
+            log.error("Task execution timed out", { taskId });
+            publishStatus(bus, taskId, contextId, "failed", msg, true);
+            terminalPublished = true;
+            bus.finished();
+          }
+
+          // The remaining case — aborted, not timed out — is cancellation, and
+          // it deliberately publishes nothing: `cancelTask` already published
+          // `canceled` and called `bus.finished()`. Emitting `completed` here
+          // would hand the client two terminal events that contradict.
         } catch (err) {
           // A detected rate limit outranks whatever the teardown threw: the
           // `break` above awaits iterator.return(), so a failing teardown would
@@ -402,6 +544,17 @@ export class ClaudeExecutor implements AgentExecutor {
               error: err instanceof Error ? err.message : String(err),
             });
             endTurnRateLimited(rateLimited);
+            return;
+          }
+
+          // We break out of the loop after publishing a terminal event, which
+          // awaits iterator.return(); a throw from that teardown must not
+          // produce a second, contradictory terminal event.
+          if (terminalPublished) {
+            log.debug("Ignoring teardown error after the task was already terminal", {
+              taskId,
+              error: err instanceof Error ? err.message : String(err),
+            });
             return;
           }
 
@@ -424,6 +577,10 @@ export class ClaudeExecutor implements AgentExecutor {
             bus.finished();
           }
         } finally {
+          // The input generator parks forever if this never resolves, keeping
+          // the CLI subprocess alive. Every exit path lands here; resolving an
+          // already-resolved deferred is a no-op.
+          inputClosed.resolve();
           if (timer) clearTimeout(timer);
           this.sessionManager?.untrackExecution(taskId);
         }
