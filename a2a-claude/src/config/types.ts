@@ -178,6 +178,19 @@ export interface FeatureFlags {
   emitTodoEvents?: boolean;
   /** Publish rate-limit status changes as sideband events. Default: true. */
   emitRateLimitEvents?: boolean;
+  /**
+   * Hold the A2A Task open in `working` while Claude has background work in
+   * flight, completing it only once a turn ends with nothing left running.
+   * Default: true. Set false to complete the Task at the first SDK result, as
+   * before.
+   *
+   * This governs the completion decision only. Queries are issued in
+   * streaming-input mode either way — that is what keeps the CLI subprocess
+   * alive past the first result, and it is not switchable.
+   */
+  holdTaskForBackgroundWork?: boolean;
+  /** Publish background-task set changes as sideband events. Default: true. */
+  emitBackgroundTaskEvents?: boolean;
 }
 
 // ─── Timeout Config ─────────────────────────────────────────────────────────

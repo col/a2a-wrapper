@@ -13,7 +13,7 @@ Claude Code is Anthropic's production-grade software engineering agent. It handl
 
 **Features:**
 - Native [A2A v1.0](https://a2a-protocol.org) protocol, backward compatible with v0.3.x clients — Agent Card, JSON-RPC, REST, streaming
-- Powered by `@anthropic-ai/claude-agent-sdk` (pinned `0.3.202`) — `claude-sonnet-5`, `claude-opus-4-8`, and any SDK-compatible model
+- Powered by `@anthropic-ai/claude-agent-sdk` (pinned `0.3.245`) — `claude-sonnet-5`, `claude-opus-4-8`, and any SDK-compatible model
 - Permission-mode guardrails — headless-safe modes only, with an explicit opt-in for unrestricted access
 - MCP tool support — stdio and Streamable HTTP transports
 - Multi-turn context continuity — each A2A `contextId` maps to a persistent Claude session (resumed via the SDK's `resume` option)
@@ -200,7 +200,9 @@ Two more things worth knowing:
     "emitToolEvents": true,
     "emitFileChangeEvents": true,
     "emitTodoEvents": true,
-    "emitRateLimitEvents": true
+    "emitRateLimitEvents": true,
+    "holdTaskForBackgroundWork": true,
+    "emitBackgroundTaskEvents": true
   },
 
   "timeouts": {
@@ -215,11 +217,13 @@ Two more things worth knowing:
 
 ### Prompt timeout
 
-`timeouts.prompt` bounds a single turn, in milliseconds (default `600000`, ten minutes). When it elapses the turn is aborted and the task is published as `failed`.
+`timeouts.prompt` bounds one A2A task from start to terminal state, in milliseconds (default `600000`, ten minutes). When it elapses the task is aborted and published as `failed`.
 
-Set it to `0` — or any value `<= 0` — to disable the bound entirely and let a turn run until it completes. This is the right setting for agents whose turns legitimately run for hours.
+The timer is armed once, when the task starts, and is never re-armed. With `features.holdTaskForBackgroundWork` on (the default) a task can span several SDK turns, and this one budget covers all of them — including the idle gaps while Claude's background work runs elsewhere. See [Background tasks → Caveats](#caveats) before choosing a value.
 
-Disabling it has one consequence worth knowing: turns are serialized per context, so a turn that never finishes holds its context's queue indefinitely and every later turn on the same `contextId` blocks behind it. Cancelling the task (`tasks/cancel`) still aborts the running turn and is the escape hatch.
+Set it to `0` — or any value `<= 0` — to disable the bound entirely and let a task run until it completes. This is the right setting for agents whose turns legitimately run for hours.
+
+Disabling it has one consequence worth knowing: turns are serialized per context, so a turn that never finishes holds its context's queue indefinitely and every later turn on the same `contextId` blocks behind it. Cancelling the task (`tasks/cancel`) still aborts the running turn and is the escape hatch. With background-task holding on, that escape hatch is the *only* release — see [Background tasks → Caveats](#caveats).
 
 ### Session lifetime
 
@@ -360,6 +364,76 @@ sideband events with `action: "retrying"` carrying the SDK's `attempt`,
 `maxRetries`, and `delayMs`. Set a lower `timeouts.prompt` if a retry storm
 burning the window matters more to you than the retries succeeding.
 
+### Background tasks
+
+Claude can start work that outlives a single SDK turn — a background shell
+process, a long-running build — and end its turn saying it's waiting on the
+result. Left alone, an A2A Task has no way to represent that: the Task reaches
+a terminal state the moment the turn ends, and A2A gives an agent no way to
+open a new turn against a terminal Task, so the eventual follow-up report
+would have nowhere to land.
+
+`features.holdTaskForBackgroundWork` (default `true`) keeps the Task in
+`working` for as long as Claude reports background work in flight, instead of
+completing it at the first SDK result. Each SDK turn — a "round" — publishes
+its own `response` artifact plus a non-final `working` status update whose
+`metadata.backgroundTasks` lists what's still running (`taskId`, `type`, and
+`description`, mirrored from the SDK's own `background_tasks_changed`
+message). The Task only reaches a terminal state once a round ends with that
+set empty. A chain of any length works as rounds of one Task rather than a
+string of separate ones — check the build, kick off a deploy, report the
+result.
+
+Set `holdTaskForBackgroundWork: false` to complete the Task at the first SDK
+result, as before, regardless of what Claude reports is still running.
+
+The flag governs that completion decision and nothing else. Queries are issued
+in streaming-input mode either way: with a plain string prompt the SDK closes
+the CLI subprocess's stdin on the first result and the process exits, so
+streaming input is what makes a second round possible at all. There is no
+setting that reverts it.
+
+`features.emitBackgroundTaskEvents` (default `true`) publishes a
+`background_tasks` sideband event each time the live set changes, carrying the
+same `taskId`/`type`/`description` list plus a `count`. See
+[Sideband Events](#sideband-events).
+
+#### Caveats
+
+Four things worth knowing before relying on this.
+
+**`claude.maxTurns` now spans rounds.** A held-open Task accumulates SDK turns
+across every round it takes, so a chain that used to run as several Tasks
+under several separate budgets is now one Task under one budget. A
+`maxTurns` that was comfortable before can be exhausted mid-chain, ending the
+Task with `error_max_turns`.
+
+**Further messages on the same `contextId` queue behind a held-open Task.**
+Turns are serialized per context — see [Prompt timeout](#prompt-timeout) —
+so a Task that's waiting on background work blocks every later message on
+that context, the same as any other slow turn would. `cancelTask`
+(`tasks/cancel`) is currently the only way to release the queue early, and
+there's a sharp edge worth calling out: the remedy a user would naturally
+reach for — sending another message on the same context — is exactly what's
+blocked.
+
+**`timeouts.prompt` bounds the whole Task, not one round.** The timer is
+armed once at turn start and is never re-armed, so it also covers the idle
+gaps between rounds while Claude's background work runs elsewhere. If you run
+with a non-zero prompt timeout, raise it: the ten-minute default is usually
+too low for a chain that holds the Task open, and a Task that runs out the
+budget ends `failed` even if every round up to that point succeeded.
+
+**With `timeouts.prompt: 0`, a held-open Task has no automatic release.**
+This is the sharpest edge of the four, and it applies directly to any
+deployment that disables the prompt timeout. If the background-task set
+never empties — and the SDK's `background_tasks_changed` level is the only
+settle signal available, with no wake-up turn guaranteed to ever follow — the
+Task stays in `working` indefinitely and holds its context's queue open with
+it. `cancelTask` is the only escape. This is a known limitation of the
+current design; a non-timeout release mechanism is planned. Operators running
+with the prompt timeout disabled should monitor for Tasks stuck in `working`.
+
 ## Example Agents
 
 | Config | Port | Permission mode | Description |
@@ -429,15 +503,21 @@ Sideband events are published through `AgentEventEmitter` for every Claude Agent
 
 | Event | Emitted when | Notes |
 |---|---|---|
-| `agent_started` | SDK `system`/`init` message | Includes `backend: "claude"` and the resolved model |
+| `agent_started` | SDK `system`/`init` message | Includes `backend: "claude"` and the resolved model; emitted once per A2A Task, even across a held-open Task's several rounds — the SDK re-emits `init` on every background-task wake, so this bookend is deduplicated per Task rather than per SDK turn |
 | `thinking` | Assistant `thinking` content block | Controlled by `features.emitThinkingEvents` |
 | `tool_call_start` / `tool_call_end` | Assistant `tool_use` block / matching `tool_result` | `toolKind` is `"shell"` (Bash), `"mcp"`, `"a2a_subagent"` (mcp server `a2a-subagents`), or `"builtin"`; controlled by `features.emitToolEvents` |
 | `decision` (`kind: "file_change"`) | `Edit` / `Write` / `NotebookEdit` tool call | Path and change kind only — never file contents; controlled by `features.emitFileChangeEvents` |
 | `decision` (`kind: "todo_list"`) | `TodoWrite` tool call | Controlled by `features.emitTodoEvents` |
 | `decision` (`kind: "permission_denied"`) | SDK `system`/`permission_denied` message | Tool name + sanitized message |
-| `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns` |
+| `agent_finished` | SDK `result`/`success` message | Includes sanitized `usage`, `totalCostUsd`, `numTurns`; emitted once per A2A Task, on the round that finally completes it — not on every intermediate round of a held-open Task |
 | `agent_error` | SDK `result` failure subtypes / `error` message | Sanitized error message; reason mapped from the SDK's failure subtype (e.g. max turns, max budget) |
 | `rate_limit` | SDK `rate_limit_event`, `system`/`api_retry` with `error: "rate_limit"`, or an assistant `rate_limit` error | `action` is `"ended_turn"` (rejection — the turn stops), `"retrying"` (SDK internal retry, with the `retry` counters), or `"warning"`; carries `status` plus `rateLimitType` / `resetsAt` / `utilization` when the SDK reports them. Controlled by `features.emitRateLimitEvents` |
+| `background_tasks` | SDK `system`/`background_tasks_changed` message | Level signal with replace semantics — each event carries the full live set (`taskId` / `type` / `description`) plus `count`, and is only emitted when membership actually changes. On the default `a2a` transport it arrives as a `trace.background_tasks` artifact. See [Background tasks](#background-tasks). Controlled by `features.emitBackgroundTaskEvents` |
+
+> **Note:** `rate_limit` (and `context_window`) have no A2A trace-artifact
+> mapping, so on the default `a2a` transport they are dropped rather than
+> delivered. They are observable on the `http` transport or a custom one. This
+> is a pre-existing gap, tracked separately.
 
 ## Docker
 

@@ -1,0 +1,47 @@
+# Background-task lifecycle smoke tests
+
+Manual end-to-end checks that Claude's background-task wake actually fires in
+headless SDK mode. Unit tests use scripted fakes; only these run the real CLI.
+
+**These spend real quota** — roughly a minute of model time each — and need an
+authenticated `claude` on PATH. They are deliberately not wired into `npm test`.
+
+Each runs in a fresh temp directory, never the repo, under
+`permissionMode: "dontAsk"` with `Bash` / `BashOutput` / `KillShell`
+pre-approved and everything else denied — so a spike cannot write to your
+working tree. If a run logs `!!! permission_denied`, widen `allowedTools`
+rather than switching to `bypassPermissions`.
+
+## Running
+
+```bash
+cd scripts/background-tasks-smoke
+npm install @anthropic-ai/claude-agent-sdk@0.3.245
+node spike-single.mjs   # one background task: does a second result arrive at all
+node spike-chain.mjs    # two-stage chain: does the hold loop across rounds
+```
+
+## What to look for
+
+`spike-single.mjs` should show `background_tasks_changed` with one id, then
+`RESULT #1`, then `background_tasks_changed []`, then `RESULT #2` — two results
+on one query, with no second user message pushed. That is the whole premise of
+the feature: the CLI wakes itself when background work settles.
+
+`spike-chain.mjs` mirrors the executor's hold-vs-complete decision inline and
+prints one decision per result, each `HOLD (waiting on <task ids>)` or
+`COMPLETE`. A healthy chain run ends on `COMPLETE` with at least one `HOLD`
+before it — something like:
+
+```
+### results=3 decisions=["HOLD (waiting on bg_01…)","HOLD (waiting on bg_02…)","COMPLETE"]
+```
+
+The task ids are generated per run, so match on the shape rather than the
+exact string. What matters is that at least one result was held and the last
+one was not.
+
+Both should show `session_state_changed` **never firing**. It is documented in
+the SDK as the "authoritative turn-over signal", but it is not carried by the
+stream-json transport, which is why the executor counts the background-task
+level set instead. If it ever starts firing, revisit that decision.
