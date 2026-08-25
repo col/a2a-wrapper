@@ -54,7 +54,8 @@ export type EventType =
   | "agent_finished"
   | "agent_error"
   | "context_window"
-  | "rate_limit";
+  | "rate_limit"
+  | "background_tasks";
 
 /**
  * A single agent event carrying structured trace data.
@@ -210,7 +211,15 @@ class FunctionTransport implements EventTransport {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/** Maps EventType → A2A trace artifact key. */
+/**
+ * Maps EventType → A2A trace artifact key.
+ *
+ * An event type absent from this map is silently dropped by
+ * {@link A2ATransport} — so anything documented as reaching a client on the
+ * default transport MUST have an entry here. `rate_limit` and
+ * `context_window` are still missing; they are only observable on a non-A2A
+ * transport today.
+ */
 const EVENT_TO_TRACE_KEY: Record<string, string> = {
   tool_call_start: "trace.mcp.start",
   tool_call_end: "trace.mcp",
@@ -219,6 +228,7 @@ const EVENT_TO_TRACE_KEY: Record<string, string> = {
   agent_started: "trace.lifecycle",
   agent_finished: "trace.lifecycle",
   agent_error: "trace.lifecycle",
+  background_tasks: "trace.background_tasks",
 };
 
 /** Maps lifecycle EventType → state string. */
