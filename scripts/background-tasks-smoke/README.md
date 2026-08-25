@@ -6,6 +6,12 @@ headless SDK mode. Unit tests use scripted fakes; only these run the real CLI.
 **These spend real quota** — roughly a minute of model time each — and need an
 authenticated `claude` on PATH. They are deliberately not wired into `npm test`.
 
+Each runs in a fresh temp directory, never the repo, under
+`permissionMode: "dontAsk"` with `Bash` / `BashOutput` / `KillShell`
+pre-approved and everything else denied — so a spike cannot write to your
+working tree. If a run logs `!!! permission_denied`, widen `allowedTools`
+rather than switching to `bypassPermissions`.
+
 ## Running
 
 ```bash

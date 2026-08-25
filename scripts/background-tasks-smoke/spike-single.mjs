@@ -3,6 +3,10 @@
 // and that a second result arrives on the same query (no second user message).
 // COSTS REAL QUOTA: ~1 minute of model time.
 
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 const t0 = Date.now();
@@ -38,11 +42,16 @@ let resultCount = 0;
 const q = query({
   prompt: input(),
   options: {
-    cwd: process.cwd(),
-    // Bypass permissions only here: this is a sandboxed smoke test that needs
-    // to run unattended. Do not copy this pattern into production code.
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
+    // An empty temp dir, not the repo: this runs unattended, and nothing it
+    // does needs a working tree.
+    cwd: mkdtempSync(join(tmpdir(), "bg-smoke-")),
+    // `dontAsk` denies anything not pre-approved, so the shell family below is
+    // the whole of what this can do — no file writes, no network tools. Note
+    // this is deliberately not `bypassPermissions`, and not `auto` either: a
+    // model classifier would make an unattended quota-spending run
+    // non-deterministic.
+    permissionMode: "dontAsk",
+    allowedTools: ["Bash", "BashOutput", "KillShell"],
     settingSources: [],
     strictMcpConfig: true,
   },
@@ -69,6 +78,12 @@ try {
         break;
       case "system/init":
         log(`    ${key}`, "session", m.session_id);
+        break;
+      // The run needs Bash and nothing else. If this fires, the pre-approved
+      // tool list above is too narrow — widen it rather than reaching for
+      // bypassPermissions.
+      case "system/permission_denied":
+        log(`!!! ${key}`, m.tool_name, clip(m.message, 80));
         break;
       case "stream_event":
         break;
