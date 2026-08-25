@@ -13,7 +13,7 @@ Claude Code is Anthropic's production-grade software engineering agent. It handl
 
 **Features:**
 - Native [A2A v1.0](https://a2a-protocol.org) protocol, backward compatible with v0.3.x clients — Agent Card, JSON-RPC, REST, streaming
-- Powered by `@anthropic-ai/claude-agent-sdk` (`^0.3.235`) — `claude-sonnet-5`, `claude-opus-4-8`, and any SDK-compatible model
+- Powered by `@anthropic-ai/claude-agent-sdk` (pinned `0.3.245`) — `claude-sonnet-5`, `claude-opus-4-8`, and any SDK-compatible model
 - Permission-mode guardrails — headless-safe modes only, with an explicit opt-in for unrestricted access
 - MCP tool support — stdio and Streamable HTTP transports
 - Multi-turn context continuity — each A2A `contextId` maps to a persistent Claude session (resumed via the SDK's `resume` option)
@@ -384,9 +384,14 @@ set empty. A chain of any length works as rounds of one Task rather than a
 string of separate ones — check the build, kick off a deploy, report the
 result.
 
-Set `holdTaskForBackgroundWork: false` to restore the previous behavior: the
-Task completes at the first SDK result regardless of what Claude reports is
-still running.
+Set `holdTaskForBackgroundWork: false` to complete the Task at the first SDK
+result, as before, regardless of what Claude reports is still running.
+
+The flag governs that completion decision and nothing else. Queries are issued
+in streaming-input mode either way: with a plain string prompt the SDK closes
+the CLI subprocess's stdin on the first result and the process exits, so
+streaming input is what makes a second round possible at all. There is no
+setting that reverts it.
 
 `features.emitBackgroundTaskEvents` (default `true`) publishes a
 `background_tasks` sideband event each time the live set changes, carrying the

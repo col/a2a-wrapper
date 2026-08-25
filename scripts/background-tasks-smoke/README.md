@@ -10,7 +10,7 @@ authenticated `claude` on PATH. They are deliberately not wired into `npm test`.
 
 ```bash
 cd scripts/background-tasks-smoke
-npm install @anthropic-ai/claude-agent-sdk@^0.3.235
+npm install @anthropic-ai/claude-agent-sdk@0.3.245
 node spike-single.mjs   # one background task: does a second result arrive at all
 node spike-chain.mjs    # two-stage chain: does the hold loop across rounds
 ```

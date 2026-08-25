@@ -433,7 +433,7 @@
           "type": "boolean"
         },
         "holdTaskForBackgroundWork": {
-          "description": "Hold the A2A Task open in `working` while Claude has background work in flight, completing it only once a turn ends with nothing left running. Default: true. Set false to restore the previous behaviour of completing the Task at the first SDK result.",
+          "description": "Hold the A2A Task open in `working` while Claude has background work in flight, completing it only once a turn ends with nothing left running. Default: true. Set false to complete the Task at the first SDK result, as before. Governs the completion decision only — queries use streaming input either way.",
           "type": "boolean"
         },
         "streamArtifactChunks": {
