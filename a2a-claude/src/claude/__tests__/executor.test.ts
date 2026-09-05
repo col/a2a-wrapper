@@ -175,7 +175,7 @@ describe("ClaudeExecutor.execute", () => {
 });
 
 describe("ClaudeExecutor.cancelTask", () => {
-  it("aborts the running query and publishes canceled without failed", async () => {
+  it("interrupts the running query and publishes canceled without failed", async () => {
     const client = new FakeClaudeClient([{ messages: [{ type: "system", subtype: "init", session_id: "s", model: "m" }], hangAfter: true }]);
     const ex = new ClaudeExecutor(config, () => client);
     const run = makeBus();
@@ -189,6 +189,47 @@ describe("ClaudeExecutor.cancelTask", () => {
     expect(states(cancel.events)).toContain("canceled");
     expect(states(run.events)).not.toContain("failed");
     expect(client.queries[0].interrupted).toBe(true);
+  });
+
+  it("cancels gracefully — interrupts without aborting, and never completes the turn", async () => {
+    const client = new FakeClaudeClient([{
+      messages: [{ type: "system", subtype: "init", session_id: "s", model: "m" }],
+      hangAfter: true,
+    }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const run = makeBus();
+    const cancel = makeBus();
+
+    const p = ex.execute(makeCtx("t1", "ctx-1"), run.bus);
+    await new Promise((r) => setTimeout(r, 20));
+    await ex.cancelTask("t1", cancel.bus);
+    await p;
+
+    // Graceful: interrupt() ends the turn; the subprocess is NOT killed, so the
+    // Claude session persists cleanly and the next turn can resume it.
+    expect(client.queries[0].interrupted).toBe(true);
+    expect(client.queries[0].aborted).toBe(false);
+    // The turn ended via interrupt, so it must not be reported as completed.
+    expect(states(run.events)).not.toContain("completed");
+    expect(states(run.events)).not.toContain("failed");
+    expect(states(cancel.events)).toContain("canceled");
+  });
+
+  it("resumes the same session on the turn after a graceful cancel", async () => {
+    const client = new FakeClaudeClient([
+      { messages: [{ type: "system", subtype: "init", session_id: "sess-1", model: "m" }], hangAfter: true },
+      happyTurn("sess-1", "after cancel"),
+    ]);
+    const ex = new ClaudeExecutor(config, () => client);
+
+    const p1 = ex.execute(makeCtx("t1", "ctx-1"), makeBus().bus);
+    await new Promise((r) => setTimeout(r, 20));
+    await ex.cancelTask("t1", makeBus().bus);
+    await p1;
+
+    await ex.execute(makeCtx("t2", "ctx-1"), makeBus().bus);
+
+    expect(client.calls[1].options.resume).toBe("sess-1");
   });
 });
 

@@ -257,7 +257,7 @@ export class ClaudeExecutor implements AgentExecutor {
       log.info("Executing task", { taskId, contextId, promptLen: promptText.length });
 
       const abortController = new AbortController();
-      this.sessionManager!.trackExecution(taskId, contextId, abortController);
+      const execution = this.sessionManager!.trackExecution(taskId, contextId, abortController);
 
       const turnFn = async (): Promise<void> => {
         let timedOut = false;
@@ -430,6 +430,14 @@ export class ClaudeExecutor implements AgentExecutor {
               continue;
             }
 
+            // Cancelled via cancelTask: this terminal result is the interrupt
+            // landing, not a real completion. Close the stream and stop without
+            // publishing — cancelTask already published `canceled`.
+            if (execution.canceled) {
+              inputClosed.resolve();
+              break;
+            }
+
             // ── A result message: decide whether this ends the A2A Task ──
             if (msg.subtype === "success" && typeof msg.result === "string") {
               finalText = msg.result;
@@ -498,7 +506,9 @@ export class ClaudeExecutor implements AgentExecutor {
           // returned above.)
           const aborted = abortController.signal.aborted;
 
-          if (!terminalPublished && !aborted) {
+          // A graceful cancel ends the turn cleanly (no abort), so guard on
+          // `canceled` alongside `aborted`: neither may report `completed`.
+          if (!terminalPublished && !aborted && !execution.canceled) {
             // The iterator ended while we were still holding — the CLI died, or
             // it closed input on us. Complete with whatever the last round left
             // rather than hanging until the prompt timeout.
@@ -528,10 +538,11 @@ export class ClaudeExecutor implements AgentExecutor {
             bus.finished();
           }
 
-          // The remaining case — aborted, not timed out — is cancellation, and
-          // it deliberately publishes nothing: `cancelTask` already published
-          // `canceled` and called `bus.finished()`. Emitting `completed` here
-          // would hand the client two terminal events that contradict.
+          // The remaining case — cancellation (a graceful interrupt, or the
+          // aborted-not-timed-out fallback) — deliberately publishes nothing:
+          // `cancelTask` already published `canceled` and called `bus.finished()`.
+          // Emitting `completed` here would hand the client two terminal events
+          // that contradict.
         } catch (err) {
           // A detected rate limit outranks whatever the teardown threw: the
           // `break` above awaits iterator.return(), so a failing teardown would
@@ -555,6 +566,13 @@ export class ClaudeExecutor implements AgentExecutor {
               taskId,
               error: err instanceof Error ? err.message : String(err),
             });
+            return;
+          }
+
+          // Cancelled (graceful interrupt, or the abort fallback): cancelTask
+          // already published `canceled`, so swallow whatever the teardown threw.
+          if (execution.canceled) {
+            log.info("Task execution cancelled", { taskId });
             return;
           }
 
@@ -608,10 +626,32 @@ export class ClaudeExecutor implements AgentExecutor {
       return;
     }
 
-    execution.abortController.abort();
+    // Mark before stopping so the run loop's terminal event (which arrives once
+    // the interrupt lands) is recognised as a cancellation, not a completion.
+    execution.canceled = true;
+
+    // Prefer a graceful interrupt: streaming-input mode stops the turn and lets
+    // the Claude subprocess exit cleanly, so the session persists intact and the
+    // next turn can resume it. Killing the subprocess with abort() truncates the
+    // session mid-write, which makes the following resume return an empty turn.
+    // abort() is kept only as a fallback for when interrupt is unavailable (no
+    // live query yet) or fails.
+    let interrupted = false;
     if (execution.query) {
-      execution.query.interrupt().catch(() => {});
+      try {
+        await execution.query.interrupt();
+        interrupted = true;
+      } catch (err) {
+        log.warn("Interrupt failed; falling back to abort", {
+          taskId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+    if (!interrupted) {
+      execution.abortController.abort();
+    }
+
     publishStatus(bus, taskId, execution.contextId, "canceled", undefined, true);
     bus.finished();
     this.sessionManager?.untrackExecution(taskId);
