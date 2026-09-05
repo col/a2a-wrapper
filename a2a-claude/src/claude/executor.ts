@@ -253,7 +253,7 @@ export class ClaudeExecutor implements AgentExecutor {
       log.info("Executing task", { taskId, contextId, promptLen: promptText.length });
 
       const abortController = new AbortController();
-      this.sessionManager!.trackExecution(taskId, contextId, abortController);
+      const execution = this.sessionManager!.trackExecution(taskId, contextId, abortController);
 
       const turnFn = async (): Promise<void> => {
         let timedOut = false;
@@ -372,6 +372,14 @@ export class ClaudeExecutor implements AgentExecutor {
             return;
           }
 
+          // Cancelled via cancelTask: it already published `canceled` and
+          // finished the bus. The turn ended gracefully through interrupt, so
+          // its terminal result must not be reported as completed (or failed).
+          if (execution.canceled) {
+            log.info("Task execution cancelled", { taskId });
+            return;
+          }
+
           if (resultError) {
             publishStatus(bus, taskId, contextId, "failed", sanitizeMessage(resultError), true);
             bus.finished();
@@ -398,6 +406,13 @@ export class ClaudeExecutor implements AgentExecutor {
               error: err instanceof Error ? err.message : String(err),
             });
             endTurnRateLimited(rateLimited);
+            return;
+          }
+
+          // Cancelled via the abort fallback (interrupt unavailable): cancelTask
+          // already published `canceled`, so swallow the resulting abort error.
+          if (execution.canceled) {
+            log.info("Task execution cancelled", { taskId });
             return;
           }
 
@@ -447,10 +462,32 @@ export class ClaudeExecutor implements AgentExecutor {
       return;
     }
 
-    execution.abortController.abort();
+    // Mark before stopping so the run loop's terminal event (which arrives once
+    // the interrupt lands) is recognised as a cancellation, not a completion.
+    execution.canceled = true;
+
+    // Prefer a graceful interrupt: streaming-input mode stops the turn and lets
+    // the Claude subprocess exit cleanly, so the session persists intact and the
+    // next turn can resume it. Killing the subprocess with abort() truncates the
+    // session mid-write, which makes the following resume return an empty turn.
+    // abort() is kept only as a fallback for when interrupt is unavailable (no
+    // live query yet, or an older CLI without streaming-input control support).
+    let interrupted = false;
     if (execution.query) {
-      execution.query.interrupt().catch(() => {});
+      try {
+        await execution.query.interrupt();
+        interrupted = true;
+      } catch (err) {
+        log.warn("Interrupt failed; falling back to abort", {
+          taskId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+    if (!interrupted) {
+      execution.abortController.abort();
+    }
+
     publishStatus(bus, taskId, execution.contextId, "canceled", undefined, true);
     bus.finished();
     this.sessionManager?.untrackExecution(taskId);

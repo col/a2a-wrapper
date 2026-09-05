@@ -31,10 +31,19 @@ function abortError(): Error {
 
 class FakeQuery implements QueryLike {
   public interrupted = false;
+  private interruptResolve: (() => void) | null = null;
   constructor(private script: FakeTurnScript, private signal?: AbortSignal) {}
+
+  /** Did the turn's abort controller fire? A graceful interrupt must NOT abort. */
+  get aborted(): boolean {
+    return this.signal?.aborted ?? false;
+  }
 
   async interrupt(): Promise<void> {
     this.interrupted = true;
+    // Streaming-input interrupt ends the turn gracefully — release the hang so
+    // `generate` can emit its terminal result, mirroring the real SDK.
+    this.interruptResolve?.();
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessageLike> {
@@ -59,10 +68,23 @@ class FakeQuery implements QueryLike {
       yield msg;
     }
     if (this.script.hangAfter) {
-      await new Promise<never>((_, reject) => {
+      await new Promise<void>((resolve, reject) => {
         if (this.signal?.aborted) return reject(abortError());
+        this.interruptResolve = resolve;
         this.signal?.addEventListener("abort", () => reject(abortError()), { once: true });
       });
+      // Reached only via a graceful interrupt (abort rejects instead). The SDK's
+      // streaming-input interrupt stops the turn and emits a terminal result.
+      if (this.interrupted) {
+        yield {
+          type: "result",
+          subtype: "success",
+          result: "",
+          session_id: "s",
+          usage: { input_tokens: 0, output_tokens: 0 },
+          num_turns: 1,
+        } as SDKMessageLike;
+      }
     }
   }
 }

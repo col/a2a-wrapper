@@ -1,7 +1,48 @@
 import { describe, it, expect } from "vitest";
-import { buildQueryOptions } from "../client-factory.js";
+import { buildQueryOptions, runStreamingQuery } from "../client-factory.js";
+import type { StreamingQueryFn, QueryOptionsLike, SDKMessageLike } from "../client-factory.js";
 import { DEFAULTS } from "../../config/defaults.js";
 import type { AgentConfig } from "../../config/types.js";
+
+/** An async iterable the test pushes messages into, standing in for the SDK's
+ *  query output stream. */
+class ManualStream {
+  private queue: SDKMessageLike[] = [];
+  private waiters: Array<(r: IteratorResult<SDKMessageLike>) => void> = [];
+  private ended = false;
+
+  push(msg: SDKMessageLike): void {
+    const w = this.waiters.shift();
+    if (w) w({ value: msg, done: false });
+    else this.queue.push(msg);
+  }
+
+  end(): void {
+    this.ended = true;
+    let w: ((r: IteratorResult<SDKMessageLike>) => void) | undefined;
+    while ((w = this.waiters.shift())) w({ value: undefined as never, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKMessageLike> {
+    return {
+      next: (): Promise<IteratorResult<SDKMessageLike>> => {
+        if (this.queue.length) return Promise.resolve({ value: this.queue.shift() as SDKMessageLike, done: false });
+        if (this.ended) return Promise.resolve({ value: undefined as never, done: true });
+        return new Promise((resolve) => this.waiters.push(resolve));
+      },
+    };
+  }
+}
+
+/** True if `p` has not settled within a short window. */
+async function isPending(p: Promise<unknown>): Promise<boolean> {
+  return Promise.race([
+    p.then(() => false),
+    new Promise<boolean>((r) => setTimeout(() => r(true), 15)),
+  ]);
+}
+
+const NO_OPTS = {} as QueryOptionsLike;
 
 function cfg(claude: Partial<Required<AgentConfig>["claude"]> = {}, extra: Partial<AgentConfig> = {}): Required<AgentConfig> {
   return {
@@ -161,5 +202,110 @@ describe("buildQueryOptions", () => {
       bare.features = { ...bare.features, emitThinkingEvents: false };
       expect(buildQueryOptions(bare, {}).thinking).toBeUndefined();
     });
+  });
+});
+
+describe("runStreamingQuery", () => {
+  it("sends exactly one user message carrying the prompt", async () => {
+    let capturedInput!: AsyncIterable<{ message: { content: string } }>;
+    const out = new ManualStream();
+    const fn: StreamingQueryFn = (p) => {
+      capturedInput = p.prompt as unknown as AsyncIterable<{ message: { content: string } }>;
+      return { [Symbol.asyncIterator]: () => out[Symbol.asyncIterator](), interrupt: async () => undefined };
+    };
+
+    runStreamingQuery("hello there", NO_OPTS, fn);
+
+    const it = capturedInput[Symbol.asyncIterator]();
+    const first = await it.next();
+    expect(first.done).toBe(false);
+    expect(first.value.message.content).toBe("hello there");
+    // Only one message is ever sent for a single turn.
+    expect(await isPending(it.next())).toBe(true);
+  });
+
+  it("passes every query message through to the caller", async () => {
+    const out = new ManualStream();
+    const fn: StreamingQueryFn = () => ({
+      [Symbol.asyncIterator]: () => out[Symbol.asyncIterator](),
+      interrupt: async () => undefined,
+    });
+    const q = runStreamingQuery("hi", NO_OPTS, fn);
+
+    out.push({ type: "system" });
+    out.push({ type: "assistant" });
+    out.push({ type: "result" });
+    out.end();
+
+    const seen: string[] = [];
+    for await (const m of q) seen.push(m.type);
+    expect(seen).toEqual(["system", "assistant", "result"]);
+  });
+
+  it("holds the input open until the terminal result, then closes it", async () => {
+    let capturedInput!: AsyncIterable<unknown>;
+    const out = new ManualStream();
+    const fn: StreamingQueryFn = (p) => {
+      capturedInput = p.prompt as unknown as AsyncIterable<unknown>;
+      return { [Symbol.asyncIterator]: () => out[Symbol.asyncIterator](), interrupt: async () => undefined };
+    };
+    const q = runStreamingQuery("hi", NO_OPTS, fn);
+
+    const drained = (async () => {
+      for await (const _ of q) {
+        void _;
+      }
+    })();
+
+    const inIt = capturedInput[Symbol.asyncIterator]();
+    await inIt.next(); // the single user message
+    const secondRead = inIt.next();
+    expect(await isPending(secondRead)).toBe(true); // still open mid-turn
+
+    // The result alone closes the input — the stream is deliberately NOT ended
+    // here. In streaming mode the SDK's output does not complete on its own after
+    // a result, so closing on the result is what stops the input (and the
+    // subprocess) rather than blocking for a next turn.
+    out.push({ type: "result" });
+    expect(await isPending(secondRead)).toBe(false);
+    expect((await secondRead).done).toBe(true);
+
+    out.end();
+    await drained;
+  });
+
+  it("closes the input when the caller stops consuming early", async () => {
+    let capturedInput!: AsyncIterable<unknown>;
+    const out = new ManualStream();
+    const fn: StreamingQueryFn = (p) => {
+      capturedInput = p.prompt as unknown as AsyncIterable<unknown>;
+      return { [Symbol.asyncIterator]: () => out[Symbol.asyncIterator](), interrupt: async () => undefined };
+    };
+    const q = runStreamingQuery("hi", NO_OPTS, fn);
+
+    const it = q[Symbol.asyncIterator]();
+    out.push({ type: "assistant" });
+    await it.next();
+    await it.return?.(undefined); // caller breaks out (cancel/timeout teardown)
+
+    const inIt = capturedInput[Symbol.asyncIterator]();
+    await inIt.next();
+    expect((await inIt.next()).done).toBe(true); // input released, no hung subprocess
+  });
+
+  it("interrupt() delegates to the underlying query", async () => {
+    let interrupts = 0;
+    const out = new ManualStream();
+    const fn: StreamingQueryFn = () => ({
+      [Symbol.asyncIterator]: () => out[Symbol.asyncIterator](),
+      interrupt: async () => {
+        interrupts++;
+        return undefined;
+      },
+    });
+    const q = runStreamingQuery("hi", NO_OPTS, fn);
+
+    await q.interrupt();
+    expect(interrupts).toBe(1);
   });
 });

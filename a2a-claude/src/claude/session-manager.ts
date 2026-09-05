@@ -28,6 +28,13 @@ export interface ActiveExecution {
   abortController: AbortController;
   /** Live query handle for interrupt() support. Attached once the turn starts. */
   query?: QueryLike;
+  /**
+   * Set by `cancelTask` before it interrupts. The turn ends gracefully (the SDK
+   * emits a terminal result), so the run loop reads this to suppress the
+   * `completed`/`failed` status it would otherwise publish — cancellation is
+   * reported once, by `cancelTask`, as `canceled`.
+   */
+  canceled?: boolean;
 }
 
 export class SessionManager {

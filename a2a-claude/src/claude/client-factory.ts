@@ -7,7 +7,7 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentConfig, ClaudeThinkingConfig } from "../config/types.js";
 import { buildMcpServers } from "./mcp-adapter.js";
 
@@ -162,11 +162,84 @@ export function buildQueryOptions(
 /**
  * Create a real Claude client. ANTHROPIC_API_KEY (or Bedrock/Vertex/OAuth env
  * vars) are read from the environment by the SDK — never passed via config.
+ *
+ * The prompt is delivered in **streaming-input mode** (an `AsyncIterable` of one
+ * user message) rather than as a plain string. This is what makes `query.interrupt()`
+ * available: the SDK only accepts control requests — interrupt among them — when
+ * the input is a stream. A graceful interrupt lets the turn stop and the Claude
+ * subprocess exit cleanly, so the session persists intact and the next turn can
+ * resume it; aborting the process instead truncates the session mid-write, which
+ * makes the following resume return an empty turn.
  */
 export function createClaudeClient(_config: Required<AgentConfig>): ClaudeClientLike {
   return {
     runQuery(prompt: string, options: QueryOptionsLike): QueryLike {
-      return query({ prompt, options: options as unknown as Options }) as unknown as QueryLike;
+      return runStreamingQuery(prompt, options);
     },
+  };
+}
+
+/** The subset of the SDK's `Query` this module drives — an async message stream
+ *  plus `interrupt()`. Injectable so the streaming-input wiring can be tested
+ *  without spawning the real Claude CLI. */
+export interface StreamingQuery extends AsyncIterable<SDKMessageLike> {
+  interrupt(): Promise<unknown>;
+}
+
+export type StreamingQueryFn = (params: {
+  prompt: AsyncIterable<SDKUserMessage>;
+  options: Options;
+}) => StreamingQuery;
+
+const defaultQueryFn: StreamingQueryFn = (params) =>
+  query(params) as unknown as StreamingQuery;
+
+/**
+ * Drive a single-turn query through streaming input. One user message is yielded,
+ * then the input is held open — the control channel interrupt() rides on shares
+ * the input stream, so closing it early would disable interrupt. Once the turn's
+ * terminal `result` arrives the input is closed, letting the CLI shut the session
+ * down cleanly and the output iterator complete.
+ */
+export function runStreamingQuery(
+  prompt: string,
+  options: QueryOptionsLike,
+  queryFn: StreamingQueryFn = defaultQueryFn,
+): QueryLike {
+  let closeInput!: () => void;
+  const inputClosed = new Promise<void>((resolve) => {
+    closeInput = resolve;
+  });
+
+  async function* inputStream(): AsyncGenerator<SDKUserMessage> {
+    yield {
+      type: "user",
+      message: { role: "user", content: prompt },
+      parent_tool_use_id: null,
+    } as SDKUserMessage;
+    await inputClosed;
+  }
+
+  const q = queryFn({ prompt: inputStream(), options: options as unknown as Options });
+
+  async function* output(): AsyncGenerator<SDKMessageLike> {
+    try {
+      for await (const msg of q) {
+        yield msg;
+        // A single turn ends at its terminal result. Closing the input lets the
+        // query complete so this loop — and the caller's — ends rather than
+        // blocking for a next turn that will never be sent.
+        if (msg.type === "result") closeInput();
+      }
+    } finally {
+      // The caller broke out early (cancel/timeout teardown) — release the input
+      // so the query cannot leak a hung subprocess.
+      closeInput();
+    }
+  }
+
+  return {
+    [Symbol.asyncIterator]: () => output(),
+    interrupt: () => q.interrupt().then(() => undefined),
   };
 }
