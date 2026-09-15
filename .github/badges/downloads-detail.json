@@ -1,0 +1,12 @@
+{
+  "perPackage": {
+    "@a2a-wrapper/core": 5100,
+    "a2a-claude": 1536,
+    "a2a-codex": 2367,
+    "a2a-copilot": 3831,
+    "a2a-opencode": 3817,
+    "a2a-antigravity": 1415
+  },
+  "grand": 18066,
+  "updatedAt": "2026-09-15T10:36:55.910Z"
+}
