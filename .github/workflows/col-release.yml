@@ -52,6 +52,9 @@ jobs:
 
       - name: Assemble refs onto base
         id: assemble
+        env:
+          BASE: ${{ inputs.base }}
+          REFS: ${{ inputs.refs }}
         run: |
           set -euo pipefail
           git config user.name "col-release[bot]"
@@ -60,12 +63,15 @@ jobs:
           git fetch --quiet upstream
           git fetch --quiet origin
 
-          BASE="${{ inputs.base }}"
+          # Preserve the release tooling before resetting the tree to the base,
+          # which does not contain scripts/col-release/ and would delete it.
+          cp -r scripts/col-release "$RUNNER_TEMP/col-release"
+
           echo "Base: $BASE"
           git checkout -B __build__ "$BASE"
 
           MANIFEST_REFS=""
-          REFS="$(printf '%s' "${{ inputs.refs }}" | tr ',' '\n')"
+          REFLIST="$(printf '%s' "$REFS" | tr ',' '\n')"
           while IFS= read -r ref; do
             ref="$(echo "$ref" | xargs)"   # trim whitespace
             [ -z "$ref" ] && continue
@@ -76,7 +82,7 @@ jobs:
             fi
             sha="$(git rev-parse --short=7 "origin/$ref")"
             MANIFEST_REFS="${MANIFEST_REFS}- ${ref} (${sha})"$'\n'
-          done <<< "$REFS"
+          done <<< "$REFLIST"
 
           {
             echo "shortsha=$(git rev-parse --short=7 HEAD)"
@@ -84,9 +90,9 @@ jobs:
             echo "base=$BASE"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "manifest_refs<<EOF"
+            echo "manifest_refs<<MANIFEST_EOF"
             printf '%s' "$MANIFEST_REFS"
-            echo "EOF"
+            echo "MANIFEST_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install and build
@@ -105,7 +111,7 @@ jobs:
           REPO_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          SUMMARY="$(node scripts/col-release/transform.mjs)"
+          SUMMARY="$(node "$RUNNER_TEMP/col-release/transform.mjs")"
           echo "$SUMMARY"
           echo "core_name=$(echo "$SUMMARY" | node -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(JSON.parse(s).core.name)')" >> "$GITHUB_OUTPUT"
           echo "core_version=$(echo "$SUMMARY" | node -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(JSON.parse(s).core.version)')" >> "$GITHUB_OUTPUT"
@@ -115,51 +121,57 @@ jobs:
       - name: Publish packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           DRY=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
-          npm publish --tag "${{ inputs.dist_tag }}" $DRY -w packages/core
-          npm publish --tag "${{ inputs.dist_tag }}" $DRY -w a2a-claude
+          if [ "$DRY_RUN" = "true" ]; then DRY="--dry-run"; fi
+          npm publish --tag "$DIST_TAG" $DRY -w packages/core
+          npm publish --tag "$DIST_TAG" $DRY -w a2a-claude
 
       - name: Create GitHub Release
         if: ${{ inputs.dry_run == false }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+          BASE: ${{ steps.assemble.outputs.base }}
+          MANIFEST_REFS: ${{ steps.assemble.outputs.manifest_refs }}
+          CORE_NV: ${{ steps.transform.outputs.core_name }}@${{ steps.transform.outputs.core_version }}
+          CLAUDE_NAME: ${{ steps.transform.outputs.claude_name }}
+          CLAUDE_VERSION: ${{ steps.transform.outputs.claude_version }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          TAG="col-release/${{ steps.transform.outputs.claude_version }}"
-          NOTES="$(cat <<EOF
-          Fork beta build published to GitHub Packages under dist-tag \`${{ inputs.dist_tag }}\`.
-
-          **Base:** ${{ steps.assemble.outputs.base }}
-
-          **Merged refs:**
-          ${{ steps.assemble.outputs.manifest_refs }}
-          **Published:**
-          - ${{ steps.transform.outputs.core_name }}@${{ steps.transform.outputs.core_version }}
-          - ${{ steps.transform.outputs.claude_name }}@${{ steps.transform.outputs.claude_version }}
-          EOF
-          )"
+          TAG="col-release/${CLAUDE_VERSION}"
+          NOTES="$(printf 'Fork beta build published to GitHub Packages under dist-tag `%s`.\n\n**Base:** %s\n\n**Merged refs:**\n%s\n**Published:**\n- %s\n- %s@%s\n' \
+            "$DIST_TAG" "$BASE" "$MANIFEST_REFS" "$CORE_NV" "$CLAUDE_NAME" "$CLAUDE_VERSION")"
           gh release create "$TAG" \
-            --title "${{ steps.transform.outputs.claude_name }}@${{ steps.transform.outputs.claude_version }}" \
+            --title "${CLAUDE_NAME}@${CLAUDE_VERSION}" \
             --notes "$NOTES" \
-            --target "$(git rev-parse HEAD)"
+            --target "$TARGET_SHA"
 
       - name: Job summary
         if: ${{ always() }}
+        env:
+          DIST_TAG: ${{ inputs.dist_tag }}
+          BASE: ${{ steps.assemble.outputs.base }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CORE_NV: ${{ steps.transform.outputs.core_name }}@${{ steps.transform.outputs.core_version }}
+          CLAUDE_NAME: ${{ steps.transform.outputs.claude_name }}
+          CLAUDE_VERSION: ${{ steps.transform.outputs.claude_version }}
         run: |
           {
             echo "### col-release"
             echo ""
-            echo "- Base: \`${{ steps.assemble.outputs.base }}\`"
-            echo "- dry_run: \`${{ inputs.dry_run }}\`, dist-tag: \`${{ inputs.dist_tag }}\`"
+            echo "- Base: \`$BASE\`"
+            echo "- dry_run: \`$DRY_RUN\`, dist-tag: \`$DIST_TAG\`"
             echo "- Published:"
-            echo "  - \`${{ steps.transform.outputs.core_name }}@${{ steps.transform.outputs.core_version }}\`"
-            echo "  - \`${{ steps.transform.outputs.claude_name }}@${{ steps.transform.outputs.claude_version }}\`"
+            echo "  - \`$CORE_NV\`"
+            echo "  - \`${CLAUDE_NAME}@${CLAUDE_VERSION}\`"
             echo ""
             echo "Consumer install:"
             echo '```'
-            echo "npm install ${{ steps.transform.outputs.claude_name }}@${{ inputs.dist_tag }}"
+            echo "npm install ${CLAUDE_NAME}@${DIST_TAG}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
