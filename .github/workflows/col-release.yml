@@ -1,0 +1,165 @@
+name: col-release
+
+# Manual @col beta publisher for GitHub Packages.
+#
+# Assembles 1..N refs onto a base (default upstream/main) ephemerally in the
+# runner, rewrites both packages to the @col scope via scripts/col-release,
+# publishes to GitHub Packages, and records a GitHub Release manifest.
+# Nothing transformed is ever committed. See
+# docs/superpowers/specs/2026-10-01-col-release-pipeline-design.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "Feature refs to merge onto base (comma/newline separated branch names on origin). Empty = base only."
+        required: false
+        default: ""
+      base:
+        description: "Base ref to assemble on top of."
+        required: false
+        default: "upstream/main"
+      dist_tag:
+        description: "npm dist-tag to publish under."
+        required: false
+        default: "beta"
+      dry_run:
+        description: "Build and pack without publishing or creating a Release."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release/col
+        uses: actions/checkout@v4
+        with:
+          ref: release/col
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: "@${{ github.repository_owner }}"
+
+      - name: Assemble refs onto base
+        id: assemble
+        run: |
+          set -euo pipefail
+          git config user.name "col-release[bot]"
+          git config user.email "col-release@users.noreply.github.com"
+          git remote add upstream https://github.com/shashikanth-gs/a2a-wrapper.git || true
+          git fetch --quiet upstream
+          git fetch --quiet origin
+
+          BASE="${{ inputs.base }}"
+          echo "Base: $BASE"
+          git checkout -B __build__ "$BASE"
+
+          MANIFEST_REFS=""
+          REFS="$(printf '%s' "${{ inputs.refs }}" | tr ',' '\n')"
+          while IFS= read -r ref; do
+            ref="$(echo "$ref" | xargs)"   # trim whitespace
+            [ -z "$ref" ] && continue
+            echo "Merging origin/$ref"
+            if ! git merge --no-edit "origin/$ref"; then
+              echo "::error::merge conflict while merging origin/$ref onto $BASE"
+              exit 1
+            fi
+            sha="$(git rev-parse --short=7 "origin/$ref")"
+            MANIFEST_REFS="${MANIFEST_REFS}- ${ref} (${sha})"$'\n'
+          done <<< "$REFS"
+
+          {
+            echo "shortsha=$(git rev-parse --short=7 HEAD)"
+            echo "stamp=$(date -u +%Y%m%d%H%M)"
+            echo "base=$BASE"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "manifest_refs<<EOF"
+            printf '%s' "$MANIFEST_REFS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Transform manifests to @col scope
+        id: transform
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REGISTRY: https://npm.pkg.github.com
+          STAMP: ${{ steps.assemble.outputs.stamp }}
+          SHORTSHA: ${{ steps.assemble.outputs.shortsha }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          SUMMARY="$(node scripts/col-release/transform.mjs)"
+          echo "$SUMMARY"
+          echo "core_name=$(echo "$SUMMARY" | node -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(JSON.parse(s).core.name)')" >> "$GITHUB_OUTPUT"
+          echo "core_version=$(echo "$SUMMARY" | node -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(JSON.parse(s).core.version)')" >> "$GITHUB_OUTPUT"
+          echo "claude_name=$(echo "$SUMMARY" | node -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(JSON.parse(s).claude.name)')" >> "$GITHUB_OUTPUT"
+          echo "claude_version=$(echo "$SUMMARY" | node -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(JSON.parse(s).claude.version)')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          npm publish --tag "${{ inputs.dist_tag }}" $DRY -w packages/core
+          npm publish --tag "${{ inputs.dist_tag }}" $DRY -w a2a-claude
+
+      - name: Create GitHub Release
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="col-release/${{ steps.transform.outputs.claude_version }}"
+          NOTES="$(cat <<EOF
+          Fork beta build published to GitHub Packages under dist-tag \`${{ inputs.dist_tag }}\`.
+
+          **Base:** ${{ steps.assemble.outputs.base }}
+
+          **Merged refs:**
+          ${{ steps.assemble.outputs.manifest_refs }}
+          **Published:**
+          - ${{ steps.transform.outputs.core_name }}@${{ steps.transform.outputs.core_version }}
+          - ${{ steps.transform.outputs.claude_name }}@${{ steps.transform.outputs.claude_version }}
+          EOF
+          )"
+          gh release create "$TAG" \
+            --title "${{ steps.transform.outputs.claude_name }}@${{ steps.transform.outputs.claude_version }}" \
+            --notes "$NOTES" \
+            --target "$(git rev-parse HEAD)"
+
+      - name: Job summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### col-release"
+            echo ""
+            echo "- Base: \`${{ steps.assemble.outputs.base }}\`"
+            echo "- dry_run: \`${{ inputs.dry_run }}\`, dist-tag: \`${{ inputs.dist_tag }}\`"
+            echo "- Published:"
+            echo "  - \`${{ steps.transform.outputs.core_name }}@${{ steps.transform.outputs.core_version }}\`"
+            echo "  - \`${{ steps.transform.outputs.claude_name }}@${{ steps.transform.outputs.claude_version }}\`"
+            echo ""
+            echo "Consumer install:"
+            echo '```'
+            echo "npm install ${{ steps.transform.outputs.claude_name }}@${{ inputs.dist_tag }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
