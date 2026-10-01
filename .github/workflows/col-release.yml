@@ -134,6 +134,7 @@ jobs:
         if: ${{ inputs.dry_run == false }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           DIST_TAG: ${{ inputs.dist_tag }}
           BASE: ${{ steps.assemble.outputs.base }}
           MANIFEST_REFS: ${{ steps.assemble.outputs.manifest_refs }}
