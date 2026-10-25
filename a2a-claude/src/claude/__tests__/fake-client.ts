@@ -79,6 +79,10 @@ function abortError(): Error {
 
 class FakeQuery implements QueryLike {
   public interrupted = false;
+  private interruptResolve: (() => void) | null = null;
+  private readonly interruptP = new Promise<void>((r) => {
+    this.interruptResolve = r;
+  });
   constructor(
     private script: FakeTurnScript,
     private signal?: AbortSignal,
@@ -86,8 +90,16 @@ class FakeQuery implements QueryLike {
     private inputClosed: Promise<void> = Promise.resolve(),
   ) {}
 
+  /** Did the turn's abort controller fire? A graceful interrupt must NOT abort. */
+  get aborted(): boolean {
+    return this.signal?.aborted ?? false;
+  }
+
   async interrupt(): Promise<void> {
     this.interrupted = true;
+    // Streaming-input interrupt stops the turn gracefully: the SDK ends the
+    // current turn with a terminal result rather than killing the process.
+    this.interruptResolve?.();
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessageLike> {
@@ -123,11 +135,13 @@ class FakeQuery implements QueryLike {
   }
 
   /**
-   * Park until `until` settles, or until abort. Returns "aborted" only when the
-   * script opted into a clean end; otherwise abort rejects, as the SDK does.
+   * Park until `until` settles, until abort, or until a graceful interrupt.
+   * Returns "aborted" only when the script opted into a clean end; otherwise
+   * abort rejects, as the SDK does. "interrupted" fires when `interrupt()` was
+   * called — the turn should then end with a terminal result.
    */
-  private park(until?: Promise<void>): Promise<"settled" | "aborted"> {
-    return new Promise<"settled" | "aborted">((resolve, reject) => {
+  private park(until?: Promise<void>): Promise<"settled" | "aborted" | "interrupted"> {
+    return new Promise<"settled" | "aborted" | "interrupted">((resolve, reject) => {
       const onAbort = (): void => {
         if (this.script.endCleanlyOnAbort) resolve("aborted");
         else reject(abortError());
@@ -135,7 +149,20 @@ class FakeQuery implements QueryLike {
       if (this.signal?.aborted) return onAbort();
       this.signal?.addEventListener("abort", onAbort, { once: true });
       if (until) void until.then(() => resolve("settled"));
+      void this.interruptP.then(() => resolve("interrupted"));
     });
+  }
+
+  /** The terminal result a graceful interrupt ends the turn with. */
+  private interruptResult(): SDKMessageLike {
+    return {
+      type: "result",
+      subtype: "success",
+      result: "",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      num_turns: 1,
+      session_id: "s",
+    } as SDKMessageLike;
   }
 
   private async *generate(): AsyncGenerator<SDKMessageLike> {
@@ -148,10 +175,20 @@ class FakeQuery implements QueryLike {
     if (this.script.hangUntilInputClosed) {
       // A real CLI exits when its stdin closes, not when it runs out of things
       // to say. Aborting still tears it down mid-wait.
-      if ((await this.park(this.inputClosed)) === "aborted") return;
+      const outcome = await this.park(this.inputClosed);
+      if (outcome === "aborted") return;
+      if (outcome === "interrupted") {
+        yield this.interruptResult();
+        return;
+      }
     }
     if (this.script.hangAfter) {
-      if ((await this.park()) === "aborted") return;
+      const outcome = await this.park();
+      if (outcome === "aborted") return;
+      if (outcome === "interrupted") {
+        yield this.interruptResult();
+        return;
+      }
     }
   }
 }
