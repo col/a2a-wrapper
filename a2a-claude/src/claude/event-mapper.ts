@@ -7,6 +7,8 @@
  * Sanitization rules (applied to all emitted data):
  * - Redact fields matching SENSITIVE_KEYS
  * - Truncate tool output to MAX_OUTPUT_LENGTH characters
+ * - Replace NUL bytes in tool output with U+FFFD, because JSON consumers such as
+ *   Postgres `jsonb` reject `\u0000`
  * - Never emit file contents (only path + operation kind)
  * - Never emit raw environment variable values
  */
@@ -68,7 +70,7 @@ function truncateOutput(output: unknown): string {
       : output === undefined || output === null
         ? ""
         : JSON.stringify(sanitizeData(output));
-  const text = redactSecrets(raw);
+  const text = redactSecrets(raw).replaceAll("\u0000", "\uFFFD");
   if (text.length > MAX_OUTPUT_LENGTH) {
     return text.substring(0, MAX_OUTPUT_LENGTH) + `\n... [truncated, ${text.length} total chars]`;
   }

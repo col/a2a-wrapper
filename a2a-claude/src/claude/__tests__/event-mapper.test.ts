@@ -105,6 +105,20 @@ describe("EventMapper", () => {
     expect(emitted[0].data.itemId).toBe("tu1");
   });
 
+  it("replaces NUL bytes in tool_result output with U+FFFD", () => {
+    const { mapper, emitted } = makeMapper();
+    mapper.handleMessage({
+      type: "user",
+      parent_tool_use_id: null,
+      message: { content: [
+        { type: "tool_result", tool_use_id: "tu1", content: "a\u0000b\u0000\u0000" },
+      ] },
+    });
+    const output = emitted[0].data.output as string;
+    expect(output).toBe("a\uFFFDb\uFFFD\uFFFD");
+    expect(output.includes("\u0000")).toBe(false);
+  });
+
   it("suppresses tool events when emitToolEvents is false", () => {
     const { mapper, emitted } = makeMapper({ emitToolEvents: false });
     mapper.handleMessage(assistantMsg([{ type: "tool_use", id: "t", name: "Bash", input: { command: "ls" } }]));

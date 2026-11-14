@@ -57,10 +57,12 @@ function sanitizeData(data: unknown): unknown {
 
 function truncateOutput(output: unknown): string {
   if (typeof output !== "string") return "";
-  if (output.length > MAX_OUTPUT_LENGTH) {
-    return output.substring(0, MAX_OUTPUT_LENGTH) + `\n... [truncated, ${output.length} total chars]`;
+  // JSON consumers such as Postgres jsonb reject \u0000, so replace NUL with U+FFFD.
+  const text = output.replaceAll("\u0000", "\uFFFD");
+  if (text.length > MAX_OUTPUT_LENGTH) {
+    return text.substring(0, MAX_OUTPUT_LENGTH) + `\n... [truncated, ${text.length} total chars]`;
   }
-  return output;
+  return text;
 }
 
 // ─── EventMapper ─────────────────────────────────────────────────────────────
