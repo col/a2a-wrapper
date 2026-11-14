@@ -189,6 +189,24 @@ describe("held-open A2A task", () => {
     expect(finished()).toBe(1);
   });
 
+  it("completes at the first result when only ambient tasks are in flight", async () => {
+    // An auto-started live-update watcher the SDK flags `ambient: true` is not
+    // activity; without a real background task behind it the Task must not be
+    // held.
+    const ambientOnly: SDKMessageLike = {
+      type: "system", subtype: "background_tasks_changed",
+      tasks: [{ task_id: "watch1", task_type: "monitor", description: "watching", ambient: true }],
+    };
+    const client = new FakeClaudeClient([{ messages: [init("s1"), ambientOnly, result("hello world")] }]);
+    const ex = new ClaudeExecutor(config, () => client);
+    const { bus, events, finished } = makeBus();
+
+    await settleWithin(ex.execute(makeCtx("t1", "ctx-1"), bus), 2_000, "execute");
+
+    expect(states(events)).toEqual(["submitted", "working", "completed"]);
+    expect(finished()).toBe(1);
+  });
+
   it("completes at the first result when the flag is off", async () => {
     config.features.holdTaskForBackgroundWork = false;
     const client = new FakeClaudeClient([{
