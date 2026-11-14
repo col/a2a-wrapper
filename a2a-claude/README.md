@@ -384,6 +384,11 @@ set empty. A chain of any length works as rounds of one Task rather than a
 string of separate ones — check the build, kick off a deploy, report the
 result.
 
+Tasks the SDK flags `ambient: true` — the ones it says are "not activity",
+such as live-update watchers it starts on its own — are not counted. They
+never hold the Task open and never appear in `metadata.backgroundTasks` or the
+`background_tasks` sideband event, as the SDK asks of activity indicators.
+
 Set `holdTaskForBackgroundWork: false` to complete the Task at the first SDK
 result, as before, regardless of what Claude reports is still running.
 

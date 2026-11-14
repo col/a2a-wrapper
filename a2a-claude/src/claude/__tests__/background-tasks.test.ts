@@ -63,3 +63,52 @@ describe("BackgroundTaskTracker", () => {
     expect(t.snapshot()).toEqual([{ taskId: "a", type: "unknown", description: "" }]);
   });
 });
+
+// SDK >= 0.3.286 marks tasks that are "not activity" (skip_transcript tasks and
+// live-update watchers, requested or auto-started) with `ambient: true` and tells
+// hosts to exclude them from activity indicators. The hold is an activity
+// indicator, so an ambient task must never keep an A2A Task open.
+describe("BackgroundTaskTracker ambient tasks", () => {
+  function changedWith(
+    ...tasks: Array<{ id: string; ambient?: boolean }>
+  ): SDKMessageLike {
+    return {
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: tasks.map(({ id, ambient }) => ({
+        task_id: id,
+        task_type: "monitor",
+        description: `task ${id}`,
+        ...(ambient === undefined ? {} : { ambient }),
+      })),
+    };
+  }
+
+  it("excludes ambient tasks from the live set", () => {
+    const t = new BackgroundTaskTracker();
+    t.observe(changedWith({ id: "watcher", ambient: true }, { id: "work", ambient: false }));
+    expect(t.size).toBe(1);
+    expect(t.snapshot().map((x) => x.taskId)).toEqual(["work"]);
+  });
+
+  it("treats an ambient-only set as empty", () => {
+    const t = new BackgroundTaskTracker();
+    t.observe(changedWith({ id: "watcher", ambient: true }));
+    expect(t.size).toBe(0);
+    expect(t.snapshot()).toEqual([]);
+  });
+
+  it("counts an entry turning ambient as a membership change", () => {
+    const t = new BackgroundTaskTracker();
+    expect(t.observe(changedWith({ id: "a" }))).toBe(true);
+    expect(t.observe(changedWith({ id: "a", ambient: true }))).toBe(true);
+    expect(t.size).toBe(0);
+  });
+
+  it("does not report a change when only ambient entries come and go", () => {
+    const t = new BackgroundTaskTracker();
+    t.observe(changedWith({ id: "work" }));
+    expect(t.observe(changedWith({ id: "work" }, { id: "watcher", ambient: true }))).toBe(false);
+    expect(t.observe(changedWith({ id: "work" }))).toBe(false);
+  });
+});

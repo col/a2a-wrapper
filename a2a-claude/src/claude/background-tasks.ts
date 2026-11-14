@@ -8,6 +8,14 @@
  * "still running" indicator, and the SDK explicitly leaves the level's ordering
  * relative to those bookends unspecified — which is why they are ignored here.
  *
+ * Entries flagged `ambient: true` are dropped. The SDK (>= 0.3.286) marks tasks
+ * that are "not activity" that way — every skip_transcript task and every
+ * live-update watcher, requested or auto-started — and tells hosts to exclude
+ * them from activity indicators. The hold on the A2A Task is exactly such an
+ * indicator, so an ambient task must never keep it open, and since the level
+ * is re-emitted when an entry's flag flips, an entry turning ambient is seen
+ * here as that entry leaving the set.
+ *
  * The level is per-process and nothing is emitted at startup, so a tracker must
  * begin empty and be discarded when the CLI process goes away. That is enforced
  * structurally: the executor creates one tracker per query, and a query is one
@@ -41,6 +49,7 @@ export class BackgroundTaskTracker {
     for (const entry of raw) {
       if (entry === null || typeof entry !== "object") continue;
       const task = entry as Record<string, unknown>;
+      if (task.ambient === true) continue;
       const taskId = typeof task.task_id === "string" ? task.task_id : "";
       if (!taskId) continue;
       next.set(taskId, {
